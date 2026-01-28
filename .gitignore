@@ -1,24 +1,390 @@
-# Compiled class file
-*.class
+/**
+ * 세스코 통합 마케팅 대시보드 & 자가 학습 AI 리포트 (V10.0)
+ * 2026년 기준 | 전년 동요일 비교 | 카카오 실적 통합 | 피드백 기반 스타일 학습 기능
+ */
 
-# Log file
-*.log
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('AI 보고서 관리')
+      .addItem('전체 데이터 동기화 업데이트 (전체 반영)', 'updateAllData')
+      .addSeparator()
+      .addItem('데이터 업데이트 (날씨/네이버/이슈/지표)', 'updateExternalData')
+      .addItem('서치콘솔 주간비교 업데이트 (BQ)', 'updateGSCWeeklyData')
+      .addItem('GA4 내부검색어 주간비교 업데이트 (BQ)', 'updateGA4WeeklyData')
+      .addItem('GA4 핵심페이지 유입분석 (BQ)', 'updateGA4InboundWeeklyData')
+      .addSeparator()
+      .addItem('지난주 HTML 보고서 새롭게 작성하기', 'generateWeeklyReport')
+      .addItem('작성된 보고서 다시 미리보기', 'showSavedReportPreview')
+      .addToUi();
+}
 
-# BlueJ files
-*.ctxt
+// [환경 설정값]
+const GEMINI_API_KEY = 'AIzaSyCF53ValPixwybusoKfwuYwoUkFGFkSMxY';
+const NAVER_CLIENT_ID = 'ugxntcbaOqIuh_3y_uLv';
+const NAVER_CLIENT_SECRET = 'Hoqaso5G2k';
+const WEATHER_SERVICE_KEY = 'BNgXBXi+SL3VYIsQPruhshx9i37x/I/K6S5AFyd+cpu6wzvCjfZTgzu1MYazUfvVcj3wS8O1kZGADjOYUsN++A==';
+const BQ_PROJECT_ID = 'cescojungyong';
+const GA4_PROJECT_ID = 'cescomall-405900';
+const GA4_DATASET_ID = 'analytics_335040662';
+const HOLIDAY_CAL_ID = 'ko.south_korea#holiday@group.v.calendar.google.com';
 
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
+const NAVER_KEYWORD_GROUPS = [
+  { groupName: "세스코", keywords: ["세스코", "CESCO"] },
+  { groupName: "해충", keywords: ["바퀴벌레", "개미", "빈대", "쥐", "벼룩"] },
+  { groupName: "방역비용", keywords: ["세스코 비용", "세스코 가격", "방역 업체 비용", "바퀴벌레 퇴치 비용"] },
+  { groupName: "비즈니스위생", keywords: ["식당 방역", "HACCP", "해썹 인증", "식품위생법", "영업정지 위생"] },
+  { groupName: "이사방역", keywords: ["이사 방역", "입주 방역", "새집증후군", "먼지다듬이"] },
+  { groupName: "방역비교", keywords: ["렌토킬", "터미닉스", "방역업체 추천", "동네 방역"] }
+];
 
-# Package Files #
-*.jar
-*.war
-*.nar
-*.ear
-*.zip
-*.tar.gz
-*.rar
+/**
+ * [날짜 엔진] 2026년 기준 전년 동요일(364일 전) 계산
+ */
+function getReportingPeriods() {
+  const today = new Date(); 
+  const dayOfWeek = today.getDay();
+  const diffToLastMon = (dayOfWeek === 0 ? 6 : dayOfWeek - 1) + 7;
+  const curStart = new Date(today.getTime() - diffToLastMon * 24 * 60 * 60 * 1000);
+  const curEnd = new Date(curStart.getTime() + 6 * 24 * 60 * 60 * 1000);
+  const prevStart = new Date(curStart.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const prevEnd = new Date(curEnd.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const yearStart = new Date(curStart.getTime() - 364 * 24 * 60 * 60 * 1000);
+  const yearEnd = new Date(curEnd.getTime() - 364 * 24 * 60 * 60 * 1000);
+  const mtdStart = new Date(curEnd.getFullYear(), curEnd.getMonth(), 1);
+  const mtdOldStart = new Date(mtdStart.getTime() - 364 * 24 * 60 * 60 * 1000);
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
-hs_err_pid*
-replay_pid*
+  const f = (d) => Utilities.formatDate(d, "GMT+9", "yyyy-MM-dd");
+  const fbq = (d) => Utilities.formatDate(d, "GMT+9", "yyyyMMdd");
+  return {
+    cur: { start: f(curStart), end: f(curEnd), bq: fbq(curStart), bqEnd: fbq(curEnd) },
+    prev: { start: f(prevStart), end: f(prevEnd) },
+    year: { start: f(yearStart), end: f(yearEnd) },
+    mtd: { start: f(mtdStart), end: f(curEnd) },
+    mtdYear: { start: f(mtdOldStart), end: f(yearEnd) }
+  };
+}
+
+/**
+ * [데이터 엔진] 카카오 포함 수치 정밀 집계
+ */
+function getPeriodStatsExtended(sheet, startStr, endStr) {
+  const data = sheet.getDataRange().getValues();
+  let res = { 
+    total:0, webDbInclKakao:0, emergency:0, webEmSum:0, callIb:0,
+    home:0, rest:0, biz:0, etc:0, 
+    avgTemp:0, urgencyIndex:0, trendPest:0, trendCesco:0, issues:[], count:0 
+  };
+
+  for (let i = 1; i < data.length; i++) {
+    let dStr = (data[i][0] instanceof Date) ? Utilities.formatDate(data[i][0], "GMT+9", "yyyy-MM-dd") : String(data[i][0]);
+    if (dStr >= startStr && dStr <= endStr) {
+      let dailyWebWithKakao = Number(data[i][5]||0) + Number(data[i][17]||0) + Number(data[i][18]||0);
+      let dailyEmergency = Number(data[i][20]||0) + Number(data[i][21]||0);
+      res.webDbInclKakao += dailyWebWithKakao;
+      res.emergency += dailyEmergency;
+      res.webEmSum += (dailyWebWithKakao + dailyEmergency);
+      res.callIb += Number(data[i][10]||0);
+      res.total += Number(data[i][11]||0);
+      res.home += (Number(data[i][1]||0) + Number(data[i][6]||0) + Number(data[i][17]||0) + Number(data[i][20]||0));
+      res.rest += (Number(data[i][2]||0) + Number(data[i][7]||0) + Number(data[i][18]||0) + Number(data[i][21]||0));
+      res.biz  += (Number(data[i][3]||0) + Number(data[i][8]||0));
+      res.etc  += (Number(data[i][4]||0) + Number(data[i][9]||0));
+      res.avgTemp += Number(data[i][14]||0); 
+      res.trendCesco += Number(data[i][24]||0);
+      res.trendPest += Number(data[i][25]||0);
+      res.urgencyIndex += Number(data[i][19]||0);
+      if (data[i][31]) res.issues.push(data[i][31]);
+      res.count++;
+    }
+  }
+  if(res.count > 0) {
+    res.avgTemp = (res.avgTemp / res.count).toFixed(1);
+    res.urgencyIndex = (res.urgencyIndex / res.count).toFixed(2);
+    res.trendCesco = (res.trendCesco / res.count).toFixed(1);
+    res.trendPest = (res.trendPest / res.count).toFixed(1);
+  }
+  res.issues = [...new Set(res.issues)].join(" / ");
+  return res;
+}
+
+/**
+ * [Main] 학습형 보고서 작성 기능
+ */
+function generateWeeklyReport() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const dataSheet = ss.getSheetByName('2_로데이터');
+  const ga4InboundSheet = ss.getSheetByName('GA4유입키워드');
+  let reportSheet = ss.getSheetByName('보고시트') || ss.insertSheet('보고시트');
+  
+  const d = getReportingPeriods();
+  const cur = getPeriodStatsExtended(dataSheet, d.cur.start, d.cur.end);
+  const pre = getPeriodStatsExtended(dataSheet, d.prev.start, d.prev.end);
+  const old = getPeriodStatsExtended(dataSheet, d.year.start, d.year.end);
+  const mtd = getPeriodStatsExtended(dataSheet, d.mtd.start, d.mtd.end);
+  const mtdOld = getPeriodStatsExtended(dataSheet, d.mtdYear.start, d.mtdYear.end);
+  
+  const newsList = fetchRelatedNews(d.cur.start, d.cur.end);
+  const newsContext = newsList.map(n => `[${n.date}] ${n.title}`).join("\n");
+  const bestPractices = getBestPractices(); // 과거 좋아요 분석 사례 불러오기
+
+  // 1. 시트 표 업데이트 (B2~)
+  reportSheet.clear();
+  const pct = (c, p) => p > 0 ? ((c-p)/p*100).toFixed(1) + "%" : "-";
+  const header = [["구분", "홈페이지 DB(카카오 포함)", "긴급진단", "홈페이지+긴급 합계", "IB 콜", "전체 신청(L)"]];
+  
+  reportSheet.getRange("B2").setValue("1. 전년 대비 월간 누적 수치 비교 (MTD)").setFontWeight("bold");
+  reportSheet.getRange("B3:G3").setValues(header).setBackground("#0b5394").setFontColor("white");
+  reportSheet.getRange("B4:G6").setValues([
+    ["당월 누적", mtd.webDbInclKakao, mtd.emergency, mtd.webEmSum, mtd.callIb, mtd.total],
+    ["전년 누적", mtdOld.webDbInclKakao, mtdOld.emergency, mtdOld.webEmSum, mtdOld.callIb, mtdOld.total],
+    ["증감(%)", pct(mtd.webDbInclKakao, mtdOld.webDbInclKakao), pct(mtd.emergency, mtdOld.emergency), pct(mtd.webEmSum, mtdOld.webEmSum), pct(mtd.callIb, mtdOld.callIb), pct(mtd.total, mtdOld.total)]
+  ]).setHorizontalAlignment("center").setBorder(true,true,true,true,true,true);
+  reportSheet.getRange("B6:G6").setFontWeight("bold").setFontColor("red");
+
+  reportSheet.getRange("B8").setValue("2. 전년/전주 대비 주간 수치 비교").setFontWeight("bold");
+  reportSheet.getRange("B9:G9").setValues(header).setBackground("#0b5394").setFontColor("white");
+  reportSheet.getRange("B10:G14").setValues([
+    [`금주 (${d.cur.start})`, cur.webDbInclKakao, cur.emergency, cur.webEmSum, cur.callIb, cur.total],
+    [`전년 동요일 (${d.year.start})`, old.webDbInclKakao, old.emergency, old.webEmSum, old.callIb, old.total],
+    ["전년 대비 (%)", pct(cur.webDbInclKakao, old.webDbInclKakao), pct(cur.emergency, old.emergency), pct(cur.webEmSum, old.webEmSum), pct(cur.callIb, old.callIb), pct(cur.total, old.total)],
+    [`전주 (${d.prev.start})`, pre.webDbInclKakao, pre.emergency, pre.webEmSum, pre.callIb, pre.total],
+    ["전주 대비 (%)", pct(cur.webDbInclKakao, pre.webDbInclKakao), pct(cur.emergency, pre.emergency), pct(cur.webEmSum, pre.webEmSum), pct(cur.callIb, pre.callIb), pct(cur.total, pre.total)]
+  ]).setHorizontalAlignment("center").setBorder(true,true,true,true,true,true);
+
+  // 2. AI 분석 리포트 생성 (학습 데이터 포함)
+  const prompt = `
+    당신은 세스코 시니어 전략가입니다. 아래 데이터를 바탕으로 인과관계 리포트를 작성하세요.
+    
+    [중요: 마케터 학습 데이터]
+    아래는 사용자가 이전에 만족했던 분석 스타일입니다. 이와 유사한 논리 구조로 작성하세요:
+    ${bestPractices}
+
+    [데이터 컨텍스트]
+    - 기간: 금주(${d.cur.start}), 전주(${d.prev.start}), 전년(${d.year.start})
+    - 전체 실적(금/전/작): ${cur.total} / ${pre.total} / ${old.total}
+    - 통합 업종(가정/요식/사업체): 
+        * 금주: ${cur.home} / ${cur.rest} / ${cur.biz}
+        * 전주: ${pre.home} / ${pre.rest} / ${pre.biz}
+        * 전년: ${old.home} / ${old.rest} / ${old.biz}
+    - 기온차(WoW/YoY): ${(cur.avgTemp-pre.avgTemp).toFixed(1)}도 / ${(cur.avgTemp-old.avgTemp).toFixed(1)}도
+    - 트렌드지수: 금주 ${cur.trendPest} (전주비:${(cur.trendPest-pre.trendPest).toFixed(1)}p)
+    - 뉴스: ${newsContext}
+
+    [작성규칙] HTML 전용(마크다운 금지). 항목별 가~라 목차 준수. 3번 인사이트 필수.
+  `;
+
+  const aiAnalysis = callGemini(prompt).replace(/\*\*/g, ""); 
+  const finalHtml = getEmailTemplate(d, cur, pre, old, mtd, mtdOld, aiAnalysis, newsList);
+
+  reportSheet.getRange("B30").setValue(finalHtml);
+  showSavedReportPreview();
+}
+
+/**
+ * [Feedback] 마케터 반응 저장 함수
+ */
+function saveFeedback(type, section, content) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName('피드백_로그') || ss.insertSheet('피드백_로그');
+  if (sheet.getLastRow() === 0) sheet.appendRow(["날짜", "평가", "항목", "내용"]);
+  sheet.appendRow([new Date(), type, section, content]);
+  return "감사합니다! 분석 엔진이 해당 스타일을 학습했습니다.";
+}
+
+/**
+ * [Few-Shot] 성공 사례 추출
+ */
+function getBestPractices() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('피드백_로그');
+  if (!sheet || sheet.getLastRow() < 2) return "아직 학습된 데이터가 없습니다. 새로운 분석을 수행하세요.";
+  const data = sheet.getRange(2, 2, sheet.getLastRow()-1, 3).getValues();
+  return data.filter(r => r[0] === "LIKE").slice(-3).map(r => `[좋았던 예시]: ${r[2]}`).join("\n\n");
+}
+
+/**
+ * [Template] 좋아요/싫어요 버튼이 포함된 HTML 디자인
+ */
+function getEmailTemplate(d, cur, pre, old, mtd, mtdOld, aiContent, newsList) {
+  const pct = (c, p) => p > 0 ? ((c-p)/p*100).toFixed(1) + "%" : "-";
+  let newsHtml = newsList.map(n => `<li style="font-size:13px; margin-bottom:5px;">[${n.date}] <a href="${n.link}" target="_blank" style="color:#0b5394; text-decoration:none;">${n.title}</a></li>`).join("");
+
+  return `
+    <div style="font-family: 'Malgun Gothic', sans-serif; padding: 20px; color: #333;">
+      <h2 style="color: #0b5394;">📊 데이터 딥다이브 성과 분석 리포트</h2>
+      <p style="text-align: right; color: #666; font-size: 12px;">분석기간: ${d.cur.start} ~ ${d.cur.end}</p>
+
+      <table border="1" style="border-collapse: collapse; width: 100%; text-align: center; font-size: 12px; margin-bottom: 20px;">
+        <tr style="background-color: #f3f3f3;"><th>구분</th><th>홈페이지 DB<br>(카카오 포함)</th><th>긴급진단</th><th>홈페이지+긴급 합계</th><th>IB 콜</th><th>전체 신청(L)</th></tr>
+        <tr><td>당월 누적</td><td>${mtd.webDbInclKakao}</td><td>${mtd.emergency}</td><td><b>${mtd.webEmSum}</b></td><td>${mtd.callIb}</td><td>${mtd.total}</td></tr>
+        <tr><td>전년 동요일</td><td>${mtdOld.webDbInclKakao}</td><td>${mtdOld.emergency}</td><td><b>${mtdOld.webEmSum}</b></td><td>${mtdOld.callIb}</td><td>${mtdOld.total}</td></tr>
+        <tr style="color: red; font-weight: bold;"><td>증감(%)</td><td>${pct(mtd.webDbInclKakao, mtdOld.webDbInclKakao)}</td><td>${pct(mtd.emergency, mtdOld.emergency)}</td><td>${pct(mtd.webEmSum, mtdOld.webEmSum)}</td><td>${pct(mtd.callIb, mtdOld.callIb)}</td><td>${pct(mtd.total, mtdOld.total)}</td></tr>
+      </table>
+
+      <div style="margin-top: 30px; padding: 15px; border-left: 5px solid #0b5394; background-color: #fcfcfc; white-space: pre-wrap; font-size: 14px;">
+        <div id="aiAnalysisContent">${aiContent}</div>
+        <div style="margin-top:15px; border-top:1px solid #eee; padding-top:10px; font-size:12px;">
+           💡 이 분석 내용이 마음에 드시나요? <br>
+           <button onclick="sendFeedback('LIKE')" style="background:#e6f4ea; border:1px solid #34a853; border-radius:3px; cursor:pointer;">👍 좋아요 (분석 고도화 반영)</button>
+           <button onclick="sendFeedback('DISLIKE')" style="background:#fce8e6; border:1px solid #ea4335; border-radius:3px; cursor:pointer;">👎 별로예요</button>
+           <span id="feedbackMsg" style="margin-left:10px; color:#34a853; font-weight:bold;"></span>
+        </div>
+      </div>
+
+      <div style="margin-top: 30px; padding: 15px; background-color: #f9f9f9; border-radius: 8px;">
+        <h4 style="margin-top: 0; color: #0b5394;">📰 분석 참고 기간 내 주요 뉴스</h4>
+        <ul style="margin:0; padding-left:20px;">${newsHtml}</ul>
+      </div>
+
+      <div id="qa-section" style="margin-top: 40px; padding: 20px; background-color: #f0f4f8; border-radius: 10px;">
+        <h4 style="margin-top: 0; color: #0b5394;">🤖 데이터 분석가 Q&A</h4>
+        <div style="display:flex; gap:10px;"><input type="text" id="userQuery" style="flex:1; padding:10px;" placeholder="예: 일반사업체가 왜 늘었어?"><button onclick="askQuestion()" style="padding:10px 20px; background:#0b5394; color:white; border:none; cursor:pointer;">질문</button></div>
+        <div id="aiResponse" style="margin-top:15px; padding:10px; background:white; display:none; border-left:4px solid #0b5394;"><div id="loader">분석 중...</div><div id="answerText"></div></div>
+      </div>
+
+      <script>
+        function sendFeedback(type) {
+          var content = document.getElementById('aiAnalysisContent').innerText;
+          google.script.run.withSuccessHandler(function(res) {
+            document.getElementById('feedbackMsg').innerText = res;
+          }).saveFeedback(type, '전체리포트', content);
+        }
+        function askQuestion() {
+          var query = document.getElementById('userQuery').value;
+          document.getElementById('aiResponse').style.display = 'block';
+          google.script.run.withSuccessHandler(function(res) {
+            document.getElementById('answerText').innerHTML = '<b>A:</b> ' + res;
+          }).askAiQuestion(query);
+        }
+      </script>
+    </div>`;
+}
+
+// --- 하위 지원 함수군 (API 호출 및 수집) ---
+function askAiQuestion(userQuestion) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const dataSheet = ss.getSheetByName('2_로데이터');
+  const d = getReportingPeriods();
+  const cur = getPeriodStatsExtended(dataSheet, d.cur.start, d.cur.end);
+  const pre = getPeriodStatsExtended(dataSheet, d.prev.start, d.prev.end);
+  const recentNews = fetchRelatedNews(cur.start, cur.end);
+  
+  const prompt = `당신은 세스코 분석 전문가입니다. 회피형 답변 없이 단정적으로 답변하세요.
+    [데이터] 실적: ${cur.total}(전주 ${pre.total}), 가정 ${cur.home}, 요식 ${cur.rest}, 사업체 ${cur.biz}, 트렌드 ${cur.trendPest}. 
+    [질문]: "${userQuestion}" \n데이터에 기반해 4문장 내로 답변하세요.`;
+  return callGemini(prompt);
+}
+
+function callGemini(prompt) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+  const response = UrlFetchApp.fetch(url, { "method": "post", "contentType": "application/json", "payload": JSON.stringify({ "contents": [{ "parts": [{ "text": prompt }] }] }), "muteHttpExceptions": true });
+  return JSON.parse(response.getContentText()).candidates[0].content.parts[0].text;
+}
+
+function fetchRelatedNews(startDate, endDate) {
+  const url = `https://openapi.naver.com/v1/search/news.json?query=${encodeURIComponent("해충 방역 빈대 기후변화")}&display=50&sort=date`;
+  const options = { "method": "get", "headers": { "X-Naver-Client-Id": NAVER_CLIENT_ID, "X-Naver-Client-Secret": NAVER_CLIENT_SECRET } };
+  try {
+    const items = JSON.parse(UrlFetchApp.fetch(url, options).getContentText()).items;
+    const start = new Date(startDate + "T00:00:00"); const end = new Date(endDate + "T23:59:59");
+    return items.filter(item => { let p = new Date(item.pubDate); return p >= start && p <= end; })
+                .map(item => ({ title: item.title.replace(/<[^>]*>?/gm, ''), link: item.link, date: Utilities.formatDate(new Date(item.pubDate), "GMT+9", "yyyy-MM-dd") }))
+                .slice(0, 8);
+  } catch (e) { return []; }
+}
+
+function showSavedReportPreview() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const reportSheet = ss.getSheetByName('보고시트');
+  const savedHtml = reportSheet ? reportSheet.getRange("B30").getValue() : "";
+  const htmlOutput = HtmlService.createHtmlOutput(savedHtml).setWidth(950).setHeight(850);
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, '세스코 데이터 딥분석 리포트');
+}
+
+function updateAllData() {
+  const dates = getReportingPeriods();
+  updateExternalData();             
+  updateGSCWeeklyData(dates);       
+  updateGA4WeeklyData(dates);       
+  updateGA4InboundWeeklyData(dates); 
+}
+
+function updateExternalData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('2_로데이터');
+  const today = new Date();
+  const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+  const weatherData = fetchWeatherDataRange(Utilities.formatDate(new Date(today.getTime()-30*24*60*60*1000), "GMT+9", "yyyyMMdd"), Utilities.formatDate(yesterday, "GMT+9", "yyyyMMdd"));
+  const naverData = fetchNaverTrendRange(Utilities.formatDate(new Date(today.getFullYear()-2, today.getMonth(), today.getDate()), "GMT+9", "yyyy-MM-dd"), Utilities.formatDate(yesterday, "GMT+9", "yyyy-MM-dd"));
+  applyDataToSheet(sheet, weatherData, naverData);
+}
+
+function applyDataToSheet(sheet, weatherItems, naverItems) {
+  const lastRow = sheet.getLastRow();
+  const range = sheet.getRange(1, 1, lastRow, 35); 
+  const values = range.getValues();
+  const holidayCal = CalendarApp.getCalendarById(HOLIDAY_CAL_ID);
+  for (let i = 1; i < values.length; i++) {
+    let rowDate = values[i][0];
+    if (!(rowDate instanceof Date)) continue;
+    let dStr = Utilities.formatDate(rowDate, "GMT+9", "yyyy-MM-dd");
+    const wMatch = weatherItems.find(item => item.tm === dStr);
+    if (wMatch) { values[i][14] = wMatch.avgTa; values[i][22] = wMatch.maxTa; values[i][23] = wMatch.sumRn || 0; }
+    if (i > 1 && values[i][14] !== "" && values[i-1][14] !== "") values[i][15] = (values[i][14] - values[i-1][14]).toFixed(1);
+    let freeTotal = Number(values[i][5] || 0) + Number(values[i][10] || 0);
+    let emergencyTotal = Number(values[i][20] || 0) + Number(values[i][21] || 0);
+    values[i][19] = freeTotal > 0 ? (emergencyTotal / freeTotal).toFixed(2) : 0;
+    const nMatch = naverItems.find(item => item.period === dStr);
+    if (nMatch) nMatch.ratios.forEach((r, idx) => { values[i][24 + idx] = r; });
+    values[i][30] = holidayCal.getEventsForDay(rowDate).map(h => h.getTitle()).join(", ");
+  }
+  range.setValues(values);
+}
+
+function runBQQuery(sql, projectId) {
+  return BigQuery.Jobs.query({ query: sql, useLegacySql: false }, projectId).rows?.map(row => row.f.map(col => col.v)) || [];
+}
+
+function fetchNaverTrendRange(start, end) {
+  const url = "https://openapi.naver.com/v1/datalab/search"; const chunks = [];
+  for (let i = 0; i < NAVER_KEYWORD_GROUPS.length; i += 5) chunks.push(NAVER_KEYWORD_GROUPS.slice(i, i + 5));
+  let merged = [];
+  chunks.forEach((chunk, idx) => {
+    const res = UrlFetchApp.fetch(url, { "method": "post", "contentType": "application/json", "headers": { "X-Naver-Client-Id": NAVER_CLIENT_ID, "X-Naver-Client-Secret": NAVER_CLIENT_SECRET }, "payload": JSON.stringify({ "startDate": start, "endDate": end, "timeUnit": "date", "keywordGroups": chunk }) });
+    const json = JSON.parse(res.getContentText());
+    if (json.results) { 
+      if (idx === 0) json.results[0].data.forEach(d => merged.push({ period: d.period, ratios: [] }));
+      json.results.forEach((g, gIdx) => g.data.forEach(d => { let t = merged.find(r => r.period === d.period); if (t) t.ratios[idx*5+gIdx] = d.ratio; }));
+    }
+  });
+  return merged;
+}
+
+function fetchWeatherDataRange(start, end) {
+  const url = `http://apis.data.go.kr/1360000/AsosDalyInfoService/getWthrDataList?serviceKey=${encodeURIComponent(WEATHER_SERVICE_KEY)}&numOfRows=400&pageNo=1&dataCd=ASOS&dateCd=DAY&startDt=${start}&endDt=${end}&stnIds=108&dataType=JSON`;
+  return JSON.parse(UrlFetchApp.fetch(url).getContentText()).response.body.items.item || [];
+}
+
+function updateGSCWeeklyData(dates) {
+  const sql = `WITH base AS (SELECT query, clicks, CASE WHEN data_date BETWEEN '${dates.cur.start}' AND '${dates.cur.end}' THEN 'cur' WHEN data_date BETWEEN '${dates.prev.start}' AND '${dates.prev.end}' THEN 'prev' WHEN data_date BETWEEN '${dates.year.start}' AND '${dates.year.end}' THEN 'year' END as period FROM \`${BQ_PROJECT_ID}.searchconsole_cesco.searchdata_site_impression\` WHERE data_date BETWEEN '${dates.year.start}' AND '${dates.cur.end}') SELECT query, CAST(SUM(IF(period = 'cur', clicks, 0)) AS INT64) as cur, CAST(SUM(IF(period = 'prev', clicks, 0)) AS INT64) as prev, CAST(SUM(IF(period = 'year', clicks, 0)) AS INT64) as year, CAST(SUM(IF(period = 'cur', clicks, 0)) - SUM(IF(period = 'prev', clicks, 0)) AS INT64) as wow, CAST(SUM(IF(period = 'cur', clicks, 0)) - SUM(IF(period = 'year', clicks, 0)) AS INT64) as yoy FROM base GROUP BY 1 HAVING cur > 0 OR prev > 0 ORDER BY cur DESC LIMIT 300`;
+  const results = runBQQuery(sql, BQ_PROJECT_ID);
+  let sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('구글서치콘솔') || SpreadsheetApp.getActiveSpreadsheet().insertSheet('구글서치콘솔');
+  sheet.clear(); sheet.getRange(1,1,1,6).setValues([["키워드(GSC)","보고주","전주","전년동기","WoW","YoY"]]);
+  if (results.length > 0) sheet.getRange(2,1,results.length,6).setValues(results);
+}
+
+function updateGA4WeeklyData(dates) {
+  const sql = `WITH base AS (SELECT COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'search_term'), 'N/A') as keyword, CASE WHEN _TABLE_SUFFIX BETWEEN '${dates.cur.bq}' AND '${dates.cur.bqEnd}' THEN 'cur' WHEN _TABLE_SUFFIX BETWEEN '${dates.prev.bq}' AND '${dates.prev.bqEnd}' THEN 'prev' WHEN _TABLE_SUFFIX BETWEEN '${dates.year.bq}' AND '${dates.year.bqEnd}' THEN 'year' END as period FROM \`${GA4_PROJECT_ID}.${GA4_DATASET_ID}.events_*\` WHERE _TABLE_SUFFIX BETWEEN '${dates.year.bq}' AND '${dates.cur.bqEnd}' AND event_name = 'view_search_results') SELECT keyword, COUNTIF(period = 'cur') as cur, COUNTIF(period = 'prev') as prev, COUNTIF(period = 'year') as year, (COUNTIF(period = 'cur') - COUNTIF(period = 'prev')) as wow, (COUNTIF(period = 'cur') - COUNTIF(period = 'year')) as yoy FROM base WHERE keyword != 'N/A' GROUP BY 1 HAVING cur > 0 OR prev > 0 ORDER BY cur DESC LIMIT 300`;
+  const results = runBQQuery(sql, GA4_PROJECT_ID);
+  let sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('GA4검색어') || SpreadsheetApp.getActiveSpreadsheet().insertSheet('GA4검색어');
+  sheet.clear(); sheet.getRange(1,1,1,6).setValues([["내부검색어(GA4)","보고주","전주","전년동기","WoW","YoY"]]);
+  if (results.length > 0) sheet.getRange(2,1,results.length,6).setValues(results);
+}
+
+function updateGA4InboundWeeklyData(dates) {
+  const sql = `WITH session_base AS (SELECT user_pseudo_id, (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') as session_id, traffic_source.source, traffic_source.medium, COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'term'), CONCAT('(', traffic_source.medium, ')')) as keyword, CASE WHEN _TABLE_SUFFIX BETWEEN '${dates.cur.bq}' AND '${dates.cur.bqEnd}' THEN 'cur' WHEN _TABLE_SUFFIX BETWEEN '${dates.prev.bq}' AND '${dates.prev.bqEnd}' THEN 'prev' WHEN _TABLE_SUFFIX BETWEEN '${dates.year.bq}' AND '${dates.year.bqEnd}' THEN 'year' END as period, MAX(CASE WHEN EXISTS (SELECT 1 FROM UNNEST(event_params) WHERE key = 'page_location' AND (value.string_value LIKE '%estimate%' OR value.string_value LIKE '%G2000001274%')) THEN 1 ELSE 0 END) as is_target FROM \`${GA4_PROJECT_ID}.${GA4_DATASET_ID}.events_*\` WHERE _TABLE_SUFFIX BETWEEN '${dates.year.bq}' AND '${dates.cur.bqEnd}' GROUP BY 1, 2, 3, 4, 5, 6) SELECT source, medium, keyword, COUNT(DISTINCT IF(period = 'cur' AND is_target = 1, CONCAT(user_pseudo_id, CAST(session_id AS STRING)), NULL)) as cur, COUNT(DISTINCT IF(period = 'prev' AND is_target = 1, CONCAT(user_pseudo_id, CAST(session_id AS STRING)), NULL)) as prev, COUNT(DISTINCT IF(period = 'year' AND is_target = 1, CONCAT(user_pseudo_id, CAST(session_id AS STRING)), NULL)) as year FROM session_base WHERE period IS NOT NULL GROUP BY 1, 2, 3 HAVING cur > 0 OR prev > 0 ORDER BY cur DESC LIMIT 500`;
+  const results = runBQQuery(sql, GA4_PROJECT_ID);
+  let sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('GA4유입키워드') || SpreadsheetApp.getActiveSpreadsheet().insertSheet('GA4유입키워드');
+  sheet.clear(); sheet.getRange(1,1,1,8).setValues([["소스","매체","핵심유입경로","보고주","전주","전년동기","WoW증감","YoY증감"]]);
+  if (results.length > 0) { const finalResults = results.map(r => [...r, (Number(r[3])-Number(r[4])), (Number(r[3])-Number(r[5]))]); sheet.getRange(2,1,finalResults.length, 8).setValues(finalResults); }
+}
