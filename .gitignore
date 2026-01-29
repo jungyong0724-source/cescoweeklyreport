@@ -470,88 +470,118 @@ function showSavedReportPreview() { const h = SpreadsheetApp.getActiveSpreadshee
  * [V15.1] 외부 데이터(날씨, 네이버 트렌드, 지표) 동기화 엔진
  * ReferenceError 및 SyntaxError 완벽 해결 버전
  */
+/**
+ * [V15.3] 외부 데이터(날씨, 트렌드, 지표) 동기화 엔진 - 날짜 매칭 버그 완벽 수정
+ */
 function updateExternalData() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('2_로데이터');
   if (!sheet) { SpreadsheetApp.getUi().alert("2_로데이터 시트를 찾을 수 없습니다."); return; }
 
   const today = new Date();
-  const last30Days = Utilities.formatDate(new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000), "GMT+9", "yyyyMMdd");
+  // 날씨용: 최근 45일 (충분한 버퍼)
+  const last45Days = Utilities.formatDate(new Date(today.getTime() - 45 * 24 * 60 * 60 * 1000), "GMT+9", "yyyyMMdd");
   const yesterdayStr = Utilities.formatDate(new Date(today.getTime() - 24 * 60 * 60 * 1000), "GMT+9", "yyyyMMdd");
+  
+  // 네이버용: 1년 전부터 어제까지 (전년 동요일 비교를 위해)
+  const oneYearAgo = Utilities.formatDate(new Date(today.getFullYear()-1, today.getMonth(), today.getDate()-7), "GMT+9", "yyyy-MM-dd");
   const yesterdayFmt = Utilities.formatDate(new Date(today.getTime() - 24 * 60 * 60 * 1000), "GMT+9", "yyyy-MM-dd");
   
-  // 1. 외부 데이터 API 호출 (정의된 함수 사용)
-  const weatherData = fetchWeatherDataRange(last30Days, yesterdayStr);
-  const naverData = fetchNaverTrendRange(Utilities.formatDate(new Date(today.getFullYear()-2, 0, 1), "GMT+9", "yyyy-MM-dd"), yesterdayFmt);
+  // 1. 외부 데이터 API 호출
+  const weatherData = fetchWeatherDataRange(last45Days, yesterdayStr);
+  const naverData = fetchNaverTrendRange(oneYearAgo, yesterdayFmt);
   const holidayCal = CalendarApp.getCalendarById(HOLIDAY_CAL_ID);
   
-  // 2. 시트 데이터 업데이트
+  // 2. 시트 데이터 로드 (안전을 위해 최근 200줄로 범위 확장)
   const lastRow = sheet.getLastRow();
-  const startIdx = Math.max(1, lastRow - 60); 
-  const range = sheet.getRange(startIdx, 1, (lastRow - startIdx + 1), 35); 
+  const startRow = 2; // 헤더 제외 2행부터
+  const numRows = lastRow - 1;
+  if (numRows <= 0) return;
+
+  const range = sheet.getRange(startRow, 1, numRows, 35); 
   const values = range.getValues();
 
+  let weatherCount = 0;
+  let naverCount = 0;
+
   for (let i = 0; i < values.length; i++) {
-    let rowDate = values[i][0];
-    if (!(rowDate instanceof Date)) continue;
-    let dStr = Utilities.formatDate(rowDate, "GMT+9", "yyyy-MM-dd");
-    
-    // 날씨 (O:14, W:22, X:23)
+    let rawDate = values[i][0];
+    if (!rawDate) continue;
+
+    // [강화된 날짜 정규화] 어떤 형식이든 yyyy-MM-dd 문자열로 강제 변환
+    let dStr = "";
+    try {
+      if (rawDate instanceof Date) {
+        dStr = Utilities.formatDate(rawDate, "GMT+9", "yyyy-MM-dd");
+      } else {
+        // 텍스트(2026.01.20 등)일 경우 숫자만 추출해서 yyyy-MM-dd로 재구성
+        let clean = String(rawDate).replace(/[^0-9]/g, ""); 
+        if (clean.length >= 8) {
+          dStr = clean.substring(0,4) + "-" + clean.substring(4,6) + "-" + clean.substring(6,8);
+        }
+      }
+    } catch(e) { continue; }
+
+    if (!dStr) continue;
+
+    // A. 날씨 정보 매칭 (O:14, W:22, X:23)
     const wMatch = weatherData.find(item => item.tm === dStr);
     if (wMatch) { 
-      values[i][14] = wMatch.avgTa; 
-      values[i][22] = wMatch.maxTa; 
-      values[i][23] = wMatch.sumRn || 0; 
+      values[i][14] = wMatch.avgTa; // 평균기온
+      values[i][22] = wMatch.maxTa; // 최고기온
+      values[i][23] = wMatch.sumRn || 0; // 강수량
+      weatherCount++;
     }
     
-    // 기온차 (P:15)
+    // B. 전일대비 기온차 (P:15)
     if (i > 0 && values[i][14] !== "" && values[i-1][14] !== "") {
-      values[i][15] = (values[i][14] - values[i-1][14]).toFixed(1);
+      values[i][15] = (Number(values[i][14]) - Number(values[i-1][14])).toFixed(1);
     }
 
-    // 긴급도 지표 (T:19)
+    // C. 긴급도 지표 (T:19) 자동 계산
     let freeIbSum = Number(values[i][5] || 0) + Number(values[i][10] || 0);
     let emergencySum = Number(values[i][20] || 0) + Number(values[i][21] || 0);
     values[i][19] = freeIbSum > 0 ? (emergencySum / freeIbSum).toFixed(2) : 0;
 
-    // 네이버 트렌드 (Y:24 ~ AD:29)
+    // D. 네이버 트렌드 매칭 (Y:24 ~ AD:29)
     const nMatch = naverData.find(item => item.period === dStr);
     if (nMatch && nMatch.ratios) {
       nMatch.ratios.forEach((r, idx) => { if (idx < 6) values[i][24 + idx] = r; });
+      naverCount++;
     }
 
-    // 공휴일 (AE:30)
+    // E. 공휴일 정보 (AE:30)
     if (holidayCal) {
-      values[i][30] = holidayCal.getEventsForDay(rowDate).map(h => h.getTitle()).join(", ");
+      try {
+        const dateObj = (rawDate instanceof Date) ? rawDate : new Date(dStr);
+        const events = holidayCal.getEventsForDay(dateObj);
+        values[i][30] = events.length > 0 ? events.map(h => h.getTitle()).join(", ") : "";
+      } catch(e) {}
     }
   }
+  
+  // 3. 시트 반영
   range.setValues(values);
-  SpreadsheetApp.getUi().alert("날씨, 네이버 트렌드, 지표 동기화가 완료되었습니다.");
+  SpreadsheetApp.getUi().alert(`✅ 동기화 완료!\n- 날씨 업데이트: ${weatherCount}건\n- 트렌드 업데이트: ${naverCount}건`);
 }
 
-/**
- * [필수 보조 함수] 기상청 API 호출
- */
 function fetchWeatherDataRange(start, end) {
-  const url = `http://apis.data.go.kr/1360000/AsosDalyInfoService/getWthrDataList?serviceKey=${encodeURIComponent(WEATHER_SERVICE_KEY)}&numOfRows=400&pageNo=1&dataCd=ASOS&dateCd=DAY&startDt=${start}&endDt=${end}&stnIds=108&dataType=JSON`;
+  const url = `http://apis.data.go.kr/1360000/AsosDalyInfoService/getWthrDataList?serviceKey=${encodeURIComponent(WEATHER_SERVICE_KEY)}&numOfRows=900&pageNo=1&dataCd=ASOS&dateCd=DAY&startDt=${start}&endDt=${end}&stnIds=108&dataType=JSON`;
   try {
     const res = UrlFetchApp.fetch(url, { "muteHttpExceptions": true });
-    return JSON.parse(res.getContentText()).response.body.items.item || [];
-  } catch (e) { return []; }
-}
-
-
-function fetchWeatherDataRange(start, end) {
-  const url = `http://apis.data.go.kr/1360000/AsosDalyInfoService/getWthrDataList?serviceKey=${encodeURIComponent(WEATHER_SERVICE_KEY)}&numOfRows=400&pageNo=1&dataCd=ASOS&dateCd=DAY&startDt=${start}&endDt=${end}&stnIds=108&dataType=JSON`;
-  try {
-    const res = UrlFetchApp.fetch(url, { "muteHttpExceptions": true });
-    return JSON.parse(res.getContentText()).response.body.items.item || [];
-  } catch (e) { return []; }
+    const resJson = JSON.parse(res.getContentText());
+    return resJson.response.body.items.item || [];
+  } catch (e) { console.log("Weather API Error"); return []; }
 }
 
 function fetchNaverTrendRange(start, end) {
   const url = "https://openapi.naver.com/v1/datalab/search";
-  const payload = { "startDate": start, "endDate": end, "timeUnit": "date", "keywordGroups": NAVER_KEYWORD_GROUPS.slice(0, 5) };
+  const payload = { 
+    "startDate": start, 
+    "endDate": end, 
+    "timeUnit": "date", 
+    "keywordGroups": NAVER_KEYWORD_GROUPS.slice(0, 5) 
+  };
   const options = { 
     "method": "post", "contentType": "application/json", 
     "headers": { "X-Naver-Client-Id": NAVER_CLIENT_ID, "X-Naver-Client-Secret": NAVER_CLIENT_SECRET },
@@ -561,7 +591,7 @@ function fetchNaverTrendRange(start, end) {
     const res = UrlFetchApp.fetch(url, options);
     const json = JSON.parse(res.getContentText());
     let merged = [];
-    if (json.results) {
+    if (json.results && json.results[0] && json.results[0].data) {
       json.results[0].data.forEach(d => merged.push({ period: d.period, ratios: [] }));
       json.results.forEach((g, gIdx) => g.data.forEach(d => {
         let t = merged.find(r => r.period === d.period);
@@ -569,6 +599,16 @@ function fetchNaverTrendRange(start, end) {
       }));
     }
     return merged;
+  } catch (e) { console.log("Naver API Error"); return []; }
+}
+
+/**
+ * [BigQuery] 데이터 연동 공통 함수
+ */
+function runBQQuery(sql, projectId) {
+  try {
+    const queryResults = BigQuery.Jobs.query({ query: sql, useLegacySql: false }, projectId);
+    return queryResults.rows ? queryResults.rows.map(row => row.f.map(col => col.v)) : [];
   } catch (e) { return []; }
 }
 
