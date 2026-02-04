@@ -19,7 +19,7 @@ function onOpen() {
 }
 
 // [환경 설정값]
-const GEMINI_API_KEY = 'AIzaSyAoRs49kFc7jOySQjaj7A33YvOuqP3SlyY';
+const GEMINI_API_KEY = '{API KET}';
 const NAVER_CLIENT_ID = 'ugxntcbaOqIuh_3y_uLv';
 const NAVER_CLIENT_SECRET = 'Hoqaso5G2k';
 const WEATHER_SERVICE_KEY = 'BNgXBXi+SL3VYIsQPruhshx9i37x/I/K6S5AFyd+cpu6wzvCjfZTgzu1MYazUfvVcj3wS8O1kZGADjOYUsN++A==';
@@ -191,16 +191,18 @@ function generateWeeklyReport() {
         * 전년: ${old.home} / ${old.rest} / ${old.biz}
     - 긴급도(T): 금주(${cur.urgencyIndex}) / 전주(${pre.urgencyIndex}) / 전년(${old.urgencyIndex})
     - 환경 지표: 
-        * 평균 기온: 금주 ${cur.avgTemp}도 (전주차: ${(cur.avgTemp-pre.avgTemp).toFixed(1)}도, 전년차: ${(cur.avgTemp-old.avgTemp).toFixed(1)}도)
+        * 평균 기온: 금주 ${cur.avgTemp}도 (전주: ${pre.avgTemp}도, 전년: ${old.avgTemp}도)
         * 네이버 키워드 지수 (금주 | 전주차 | 전년차):
-       - 브랜드: ${cur.trendCesco} (WoW: ${(cur.trendCesco-pre.trendCesco).toFixed(1)}, YoY: ${(cur.trendCesco-old.trendCesco).toFixed(1)})
-       - 일반해충: ${cur.trendPest} (WoW: ${(cur.trendPest-pre.trendPest).toFixed(1)}, YoY: ${(cur.trendPest-old.trendPest).toFixed(1)})
-       - 방역비용: ${cur.trendCost} (WoW: ${(cur.trendCost-pre.trendCost).toFixed(1)}, YoY: ${(cur.trendCost-old.trendCost).toFixed(1)})
-       - 비즈니스위생(HACCP 등): ${cur.trendBiz} (WoW: ${(cur.trendBiz-pre.trendBiz).toFixed(1)}, YoY: ${(cur.trendBiz-old.trendBiz).toFixed(1)})
-       - 이사/입주방역: ${cur.trendMoving} (WoW: ${(cur.trendMoving-pre.trendMoving).toFixed(1)}, YoY: ${(cur.trendMoving-old.trendMoving).toFixed(1)})
-       - 타사비교/업체추천: ${cur.trendComp} (WoW: ${(cur.trendComp-pre.trendComp).toFixed(1)}, YoY: ${(cur.trendComp-old.trendComp).toFixed(1)})
+      - 네이버 키워드 트렌드 지수:
+        - 브랜드(세스코): 금주(${cur.trendCesco}) / 전주(${pre.trendCesco}) / 전년(${old.trendCesco})
+        - 일반해충: 금주(${cur.trendPest}) / 전주(${pre.trendPest}) / 전년(${old.trendPest})
+        - 방역비용: 금주(${cur.trendCost}) / 전주(${pre.trendCost}) / 전년(${old.trendCost})
+        - 비즈니스위생: 금주(${cur.trendBiz}) / 전주(${pre.trendBiz}) / 전년(${old.trendBiz})
+        - 이사방역: 금주(${cur.trendMoving}) / 전주(${pre.trendMoving}) / 전년(${old.trendMoving})
+        - 방역경쟁사: 금주(${cur.trendComp}) / 전주(${pre.trendComp}) / 전년(${old.trendComp})
     - 외부 이슈 뉴스: ${newsContext}
     - GA4 유입상세(유입변동량): ${topInbound}
+    - GSC 검색클릭: ${topGSC}
     - 내부이슈/공휴일: ${cur.issues} / ${cur.holidays || "없음"}
 
     [목차]
@@ -365,6 +367,10 @@ function getDetailedStats(sheet, startStr, endStr) {
   res.issues = [...new Set(res.issues)].join(" / ");
   return res;
 }
+
+
+
+
 
 /**
  * [키워드 엔진] 각 시트별 요약 정보 생성
