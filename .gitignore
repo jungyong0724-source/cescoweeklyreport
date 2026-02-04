@@ -289,77 +289,80 @@ function updateGA4InboundWeeklyData(dates) {
 }
 
 /**
- * [강화] 공휴일 수(Count) 및 상세 트렌드 수집 엔진
- */
-/**
- * [V15.6] 상세 데이터 집계 엔진 (모든 트렌드 및 공휴일 인과관계 분석용)
+ * [V15.7] 상세 데이터 집계 엔진 - 날짜 인식 및 기온 계산 정확도 강화
  */
 function getDetailedStats(sheet, startStr, endStr) {
   const data = sheet.getDataRange().getValues();
   let res = { 
     total:0, webDbInclKakao:0, emergency:0, webEmSum:0, callIb:0, home:0, rest:0, biz:0,
     avgTemp:0, urgencyIndex:0, 
-    trendCesco:0, trendPest:0, trendCost:0, trendBiz:0, trendMoving:0, trendComp:0, // 트렌드 6종 추가
-    issues:[], holidays:[], holidayCount:0, count:0 // 공휴일 카운트 추가
+    trendCesco:0, trendPest:0, trendCost:0, trendBiz:0, trendMoving:0, trendComp:0,
+    issues:[], holidays:[], holidayCount:0, count:0, tempCount:0 
   };
 
   for (let i = 1; i < data.length; i++) {
-    if (!data[i][0]) continue;
-    let dStr = (data[i][0] instanceof Date) ? Utilities.formatDate(data[i][0], "GMT+9", "yyyy-MM-dd") : String(data[i][0]);
-    
+    let rawDate = data[i][0];
+    if (!rawDate) continue;
+
+    // [핵심 수정] 시트의 날짜 형식을 yyyy-MM-dd 문자열로 강제 변환 (정규화)
+    let dStr = "";
+    try {
+      if (rawDate instanceof Date) {
+        dStr = Utilities.formatDate(rawDate, "GMT+9", "yyyy-MM-dd");
+      } else {
+        // 숫자만 추출해서 yyyy-MM-dd로 재구성 (2025.01.27 등 텍스트 대응)
+        let clean = String(rawDate).replace(/[^0-9]/g, ""); 
+        if (clean.length >= 8) {
+          dStr = clean.substring(0,4) + "-" + clean.substring(4,6) + "-" + clean.substring(6,8);
+        }
+      }
+    } catch(e) { continue; }
+
+    // 정규화된 날짜로 기간 비교
     if (dStr >= startStr && dStr <= endStr) {
-      // 1. 성과 데이터 집계
-      res.callIb += Number(data[i][10]||0); // K열: IB콜
-      res.total += Number(data[i][11]||0);  // L열: 전체신청
-      res.webDbInclKakao += (Number(data[i][5]||0) + Number(data[i][17]||0) + Number(data[i][18]||0)); // F+R+S열
-      res.emergency += (Number(data[i][20]||0) + Number(data[i][21]||0)); // U+V열
+      res.callIb += Number(data[i][10]||0); 
+      res.total += Number(data[i][11]||0);
+      res.webDbInclKakao += (Number(data[i][5]||0) + Number(data[i][17]||0) + Number(data[i][18]||0));
+      res.emergency += (Number(data[i][20]||0) + Number(data[i][21]||0));
       res.webEmSum += (Number(data[i][5]||0) + Number(data[i][17]||0) + Number(data[i][18]||0) + Number(data[i][20]||0) + Number(data[i][21]||0));
       
-      // 2. 업종별 데이터
       res.home += (Number(data[i][1]||0) + Number(data[i][6]||0) + Number(data[i][17]||0) + Number(data[i][20]||0));
       res.rest += (Number(data[i][2]||0) + Number(data[i][7]||0) + Number(data[i][18]||0) + Number(data[i][21]||0));
       res.biz  += (Number(data[i][3]||0) + Number(data[i][8]||0));
 
-      // 3. 환경 및 지표 데이터
-      res.avgTemp += Number(data[i][14]||0); // O열: 평균기온
-      res.urgencyIndex += Number(data[i][19]||0); // T열: 긴급도
+      // 기온 데이터가 있는 경우만 합산 (빈 셀 0도 처리 방지)
+      if (data[i][14] !== "" && !isNaN(data[i][14])) {
+        res.avgTemp += Number(data[i][14]);
+        res.tempCount++;
+      }
       
-      // 4. 네이버 트렌드 (Y:24 ~ AD:29열)
-      res.trendCesco  += Number(data[i][24]||0);
-      res.trendPest   += Number(data[i][25]||0);
-      res.trendCost   += Number(data[i][26]||0);
-      res.trendBiz    += Number(data[i][27]||0);
+      res.urgencyIndex += Number(data[i][19]||0);
+      res.trendCesco += Number(data[i][24]||0);
+      res.trendPest  += Number(data[i][25]||0);
+      res.trendCost  += Number(data[i][26]||0);
+      res.trendBiz   += Number(data[i][27]||0);
       res.trendMoving += Number(data[i][28]||0);
       res.trendComp   += Number(data[i][29]||0);
       
-      // 5. 공휴일 체크 (AE열: 30번 인덱스)
       if (data[i][30] && String(data[i][30]).trim() !== "") {
         res.holidays.push(data[i][30]);
-        res.holidayCount++; // AI 분석을 위한 핵심 변수
+        res.holidayCount++;
       }
-
-      // 6. 내부 이슈 (AF열: 31번 인덱스)
       if (data[i][31]) res.issues.push(data[i][31]);
-      
       res.count++;
     }
   }
   
-  // 데이터 후처리 (평균값 계산)
   if(res.count > 0) {
-    res.avgTemp = (res.avgTemp / res.count).toFixed(1);
+    // 기온은 실제 데이터가 기록된 날짜 수로 나눔
+    res.avgTemp = res.tempCount > 0 ? (res.avgTemp / res.tempCount).toFixed(1) : "0.0";
     res.urgencyIndex = (res.urgencyIndex / res.count).toFixed(2);
-    
-    // 트렌드 지수 6종 평균화
     ["trendCesco", "trendPest", "trendCost", "trendBiz", "trendMoving", "trendComp"].forEach(k => {
       res[k] = (res[k] / res.count).toFixed(1);
     });
   }
-
-  // 중복 제거 및 문자열 합치기
   res.holidays = [...new Set(res.holidays)].join(", ");
   res.issues = [...new Set(res.issues)].join(" / ");
-  
   return res;
 }
 
