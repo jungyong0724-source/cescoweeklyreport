@@ -19,7 +19,7 @@ function onOpen() {
 }
 
 // [환경 설정값]
-const GEMINI_API_KEY = 'AIzaSyDO91AjCzASfLaESrQce8mVS6MlQ8YvHdY';
+const GEMINI_API_KEY = 'AIzaSyAoRs49kFc7jOySQjaj7A33YvOuqP3SlyY';
 const NAVER_CLIENT_ID = 'ugxntcbaOqIuh_3y_uLv';
 const NAVER_CLIENT_SECRET = 'Hoqaso5G2k';
 const WEATHER_SERVICE_KEY = 'BNgXBXi+SL3VYIsQPruhshx9i37x/I/K6S5AFyd+cpu6wzvCjfZTgzu1MYazUfvVcj3wS8O1kZGADjOYUsN++A==';
@@ -31,10 +31,10 @@ const HOLIDAY_CAL_ID = 'ko.south_korea#holiday@group.v.calendar.google.com';
 const NAVER_KEYWORD_GROUPS = [
   { groupName: "세스코", keywords: ["세스코", "CESCO"] },
   { groupName: "해충", keywords: ["바퀴벌레", "개미", "빈대", "쥐", "벼룩"] },
-  { groupName: "방역비용", keywords: ["세스코 비용", "세스코 가격", "방역 업체 비용", "바퀴벌레 퇴치 비용"] },
+  { groupName: "방역비용", keywords: ["세스코 비용", "세스코 가격"] },
   { groupName: "비즈니스위생", keywords: ["식당 방역", "HACCP", "해썹 인증", "식품위생법", "영업정지 위생"] },
   { groupName: "이사방역", keywords: ["이사 방역", "입주 방역", "새집증후군", "먼지다듬이"] },
-  { groupName: "방역비교", keywords: ["렌토킬", "터미닉스", "방역업체 추천", "동네 방역"] }
+  { groupName: "방역비교", keywords: ["렌토킬", "터미닉스", "케어원", "방역업체 추천", "동네 방역","방역 업체 비용", "바퀴벌레 퇴치 비용"] }
 ];
 
 /**
@@ -127,20 +127,18 @@ function generateWeeklyReport() {
   
   const d = getReportingPeriods();
   
-  // 1. 상세 데이터 집계 (날씨, 트렌드, 이슈 포함)
+  // 1. 데이터 집계
   const cur = getDetailedStats(dataSheet, d.cur.start, d.cur.end);
   const pre = getDetailedStats(dataSheet, d.prev.start, d.prev.end);
   const old = getDetailedStats(dataSheet, d.year.start, d.year.end);
   const mtd = getDetailedStats(dataSheet, d.mtd.start, d.mtd.end);
   const mtdOld = getDetailedStats(dataSheet, d.mtdYear.start, d.mtdYear.end);
   
-  // 2. 키워드 요약 데이터 추출
+  // 2. 키워드/뉴스 추출
   const topInbound = extractKeywordSummary(ga4InboundSheet, 15, "유입");
-  const topInternal = extractKeywordSummary(ga4SearchSheet, 10, "내부검색");
   const topGSC = extractKeywordSummary(gscSheet, 10, "구글검색");
-  
-  // 3. 뉴스 수집
   const newsList = fetchRelatedNews(d.cur.start, d.cur.end);
+  const newsContext = newsList.length > 0 ? newsList.map(n => `[${n.date}] ${n.title}`).join(" / ") : "없음";
 
   // 4. 시트 내 수치 데이터 작성
   reportSheet.clear();
@@ -169,19 +167,57 @@ function generateWeeklyReport() {
   reportSheet.getRange("B10:G14").setValues(table2Data).setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
   // 5. AI 분석 리포트 생성
-  const prompt = `당신은 세스코 시니어 전략 마케터입니다. 아래 데이터를 분석하여 [성과 인과관계] 리포트를 작성하세요.
-    금주실적: ${cur.total}건 / 전주: ${pre.total}건 / 전년: ${old.total}건
-    환경: 기온(${cur.avgTemp}도), 트렌드(${cur.trendPest}), 이슈(${cur.issues})
-    유입경로: ${topInbound}
-    검색클릭: ${topGSC}
-    규칙: <b>, <br> 태그만 사용. 단정적 어조. 마크다운 금지.`;
+  const prompt = `당신은 세스코 시니어 전략 마케터입니다. 아래 데이터를 바탕으로 [전주 대비(WoW)]와 [전년 동요일 대비(YoY)] 성과 인과관계를 항목별(가~라)로 상세히 분석하세요.
+
+    [작성 규칙] 
+    1. HTML 전용: 마크다운(**) 금지. <b>, <br>, <p> 태그만 사용.
+    2. 전주 및 전년 분석 비중을 1:1로 하여 매우 상세히 작성할 것.
+    3. 데이터에 기반하여 단정적인 어조(~입니다)로 작성할 것.
+    - 브랜드(세스코) 키워드뿐만 아니라 해충, 비용, 비즈니스위생, 이사, 비교 검색 수요의 변화를 성과와 연결하세요.
+    - 예: "이사방역 트렌드가 급증한 것이 GA4 유입상세의 특정 경로 성과와 인과관계가 있는지" 등을 분석.
+    
+    [핵심 비즈니스 로직: 중요]
+    - 세스코 고객센터는 공휴일에 휴무입니다. 
+    - 공휴일 변수: 세스코 고객센터는 공휴일에 휴무입니다. 
+    - 만약 비교 기간 중 "공휴일"이 포함되어 유입콜(IB)이 전주나 전년 대비 하락했다면, 이를 가장 먼저 언급하여 실적 왜곡을 바로잡으세요.
+    - 예: "금주는 전년 동요일 대비 공휴일(${cur.holidayCount}일 vs ${old.holidayCount}일) 영향으로 유입콜이 물리적으로 감소했으나, 홈페이지 신청은 견조합니다."
+
+    [핵심 분석 데이터]
+    - 기간: 금주(${d.cur.start} ~ ${d.cur.end}), 전주(${d.prev.start}), 전년(${d.year.start})
+    - 전체 실적: 금주(${cur.total}건) / 전주(${pre.total}건) / 전년(${old.total}건)
+    - 통합 업종(가정/요식/사업체): 
+        * 금주: ${cur.home} / ${cur.rest} / ${cur.biz}
+        * 전주: ${pre.home} / ${pre.rest} / ${pre.biz}
+        * 전년: ${old.home} / ${old.rest} / ${old.biz}
+    - 긴급도(T): 금주(${cur.urgencyIndex}) / 전주(${pre.urgencyIndex}) / 전년(${old.urgencyIndex})
+    - 환경 지표: 
+        * 평균 기온: 금주 ${cur.avgTemp}도 (전주차: ${(cur.avgTemp-pre.avgTemp).toFixed(1)}도, 전년차: ${(cur.avgTemp-old.avgTemp).toFixed(1)}도)
+        * 네이버 키워드 지수 (금주 | 전주차 | 전년차):
+       - 브랜드: ${cur.trendCesco} (WoW: ${(cur.trendCesco-pre.trendCesco).toFixed(1)}, YoY: ${(cur.trendCesco-old.trendCesco).toFixed(1)})
+       - 일반해충: ${cur.trendPest} (WoW: ${(cur.trendPest-pre.trendPest).toFixed(1)}, YoY: ${(cur.trendPest-old.trendPest).toFixed(1)})
+       - 방역비용: ${cur.trendCost} (WoW: ${(cur.trendCost-pre.trendCost).toFixed(1)}, YoY: ${(cur.trendCost-old.trendCost).toFixed(1)})
+       - 비즈니스위생(HACCP 등): ${cur.trendBiz} (WoW: ${(cur.trendBiz-pre.trendBiz).toFixed(1)}, YoY: ${(cur.trendBiz-old.trendBiz).toFixed(1)})
+       - 이사/입주방역: ${cur.trendMoving} (WoW: ${(cur.trendMoving-pre.trendMoving).toFixed(1)}, YoY: ${(cur.trendMoving-old.trendMoving).toFixed(1)})
+       - 타사비교/업체추천: ${cur.trendComp} (WoW: ${(cur.trendComp-pre.trendComp).toFixed(1)}, YoY: ${(cur.trendComp-old.trendComp).toFixed(1)})
+    - 외부 이슈 뉴스: ${newsContext}
+    - GA4 유입상세(유입변동량): ${topInbound}
+    - 내부이슈/공휴일: ${cur.issues} / ${cur.holidays || "없음"}
+
+    [목차]
+    1. 전주 대비(WoW) 성과 인과관계 상세 분석 (가.외부현황 나.유입채널 다.네이버트렌드 라.기타)
+    2. 전년 대비(YoY) 성과 인과관계 상세 분석 (가.외부현황 나.유입채널 다.네이버트렌드 라.기타)
+    3. 긴급도 지표(T) 진단 및 전략 제언
+  `;
 
   const aiContent = callGemini(prompt).replace(/\*\*/g, ""); 
   const finalHtml = getEmailTemplate(d, cur, pre, old, mtd, mtdOld, aiContent, newsList);
+
   reportSheet.getRange("B29").setValue("▼ 아래 HTML 소스를 복사하여 메일에 사용하세요").setFontWeight("bold");
   reportSheet.getRange("B30").setValue(finalHtml);
+
   showSavedReportPreview();
 }
+
 
 /**
  * [BigQuery] GA4 핵심페이지 유입분석 (8개 컬럼 복구 및 에러 해결)
@@ -252,30 +288,78 @@ function updateGA4InboundWeeklyData(dates) {
   SpreadsheetApp.getUi().alert("GA4 유입 세션량 집계가 완료되었습니다.");
 }
 
+/**
+ * [강화] 공휴일 수(Count) 및 상세 트렌드 수집 엔진
+ */
+/**
+ * [V15.6] 상세 데이터 집계 엔진 (모든 트렌드 및 공휴일 인과관계 분석용)
+ */
 function getDetailedStats(sheet, startStr, endStr) {
   const data = sheet.getDataRange().getValues();
-  let res = { total:0, webDbInclKakao:0, emergency:0, webEmSum:0, callIb:0, home:0, rest:0, biz:0, avgTemp:0, urgencyIndex:0, trendPest:0, issues:[], count:0 };
+  let res = { 
+    total:0, webDbInclKakao:0, emergency:0, webEmSum:0, callIb:0, home:0, rest:0, biz:0,
+    avgTemp:0, urgencyIndex:0, 
+    trendCesco:0, trendPest:0, trendCost:0, trendBiz:0, trendMoving:0, trendComp:0, // 트렌드 6종 추가
+    issues:[], holidays:[], holidayCount:0, count:0 // 공휴일 카운트 추가
+  };
+
   for (let i = 1; i < data.length; i++) {
     if (!data[i][0]) continue;
     let dStr = (data[i][0] instanceof Date) ? Utilities.formatDate(data[i][0], "GMT+9", "yyyy-MM-dd") : String(data[i][0]);
+    
     if (dStr >= startStr && dStr <= endStr) {
-      res.webDbInclKakao += (Number(data[i][5]||0) + Number(data[i][17]||0) + Number(data[i][18]||0));
-      res.emergency += (Number(data[i][20]||0) + Number(data[i][21]||0));
+      // 1. 성과 데이터 집계
+      res.callIb += Number(data[i][10]||0); // K열: IB콜
+      res.total += Number(data[i][11]||0);  // L열: 전체신청
+      res.webDbInclKakao += (Number(data[i][5]||0) + Number(data[i][17]||0) + Number(data[i][18]||0)); // F+R+S열
+      res.emergency += (Number(data[i][20]||0) + Number(data[i][21]||0)); // U+V열
       res.webEmSum += (Number(data[i][5]||0) + Number(data[i][17]||0) + Number(data[i][18]||0) + Number(data[i][20]||0) + Number(data[i][21]||0));
-      res.callIb += Number(data[i][10]||0); res.total += Number(data[i][11]||0);
+      
+      // 2. 업종별 데이터
       res.home += (Number(data[i][1]||0) + Number(data[i][6]||0) + Number(data[i][17]||0) + Number(data[i][20]||0));
       res.rest += (Number(data[i][2]||0) + Number(data[i][7]||0) + Number(data[i][18]||0) + Number(data[i][21]||0));
-      res.biz += (Number(data[i][3]||0) + Number(data[i][8]||0));
-      res.avgTemp += Number(data[i][14]||0); res.urgencyIndex += Number(data[i][19]||0); res.trendPest += Number(data[i][25]||0);
-      if (data[i][31]) res.issues.push(data[i][31]); res.count++;
+      res.biz  += (Number(data[i][3]||0) + Number(data[i][8]||0));
+
+      // 3. 환경 및 지표 데이터
+      res.avgTemp += Number(data[i][14]||0); // O열: 평균기온
+      res.urgencyIndex += Number(data[i][19]||0); // T열: 긴급도
+      
+      // 4. 네이버 트렌드 (Y:24 ~ AD:29열)
+      res.trendCesco  += Number(data[i][24]||0);
+      res.trendPest   += Number(data[i][25]||0);
+      res.trendCost   += Number(data[i][26]||0);
+      res.trendBiz    += Number(data[i][27]||0);
+      res.trendMoving += Number(data[i][28]||0);
+      res.trendComp   += Number(data[i][29]||0);
+      
+      // 5. 공휴일 체크 (AE열: 30번 인덱스)
+      if (data[i][30] && String(data[i][30]).trim() !== "") {
+        res.holidays.push(data[i][30]);
+        res.holidayCount++; // AI 분석을 위한 핵심 변수
+      }
+
+      // 6. 내부 이슈 (AF열: 31번 인덱스)
+      if (data[i][31]) res.issues.push(data[i][31]);
+      
+      res.count++;
     }
   }
+  
+  // 데이터 후처리 (평균값 계산)
   if(res.count > 0) {
     res.avgTemp = (res.avgTemp / res.count).toFixed(1);
     res.urgencyIndex = (res.urgencyIndex / res.count).toFixed(2);
-    res.trendPest = (res.trendPest / res.count).toFixed(1);
+    
+    // 트렌드 지수 6종 평균화
+    ["trendCesco", "trendPest", "trendCost", "trendBiz", "trendMoving", "trendComp"].forEach(k => {
+      res[k] = (res[k] / res.count).toFixed(1);
+    });
   }
+
+  // 중복 제거 및 문자열 합치기
+  res.holidays = [...new Set(res.holidays)].join(", ");
   res.issues = [...new Set(res.issues)].join(" / ");
+  
   return res;
 }
 
@@ -543,10 +627,13 @@ function updateExternalData() {
     let emergencySum = Number(values[i][20] || 0) + Number(values[i][21] || 0);
     values[i][19] = freeIbSum > 0 ? (emergencySum / freeIbSum).toFixed(2) : 0;
 
-    // D. 네이버 트렌드 매칭 (Y:24 ~ AD:29)
+      // D. 네이버 트렌드 매칭 (Y:24 ~ AD:29)
     const nMatch = naverData.find(item => item.period === dStr);
     if (nMatch && nMatch.ratios) {
-      nMatch.ratios.forEach((r, idx) => { if (idx < 6) values[i][24 + idx] = r; });
+      // 이제 ratios 배열에 6개의 데이터가 들어있으므로 모두 시트에 적재합니다.
+      nMatch.ratios.forEach((r, idx) => { 
+        if (idx < 6) values[i][24 + idx] = r; 
+      });
       naverCount++;
     }
 
@@ -576,30 +663,46 @@ function fetchWeatherDataRange(start, end) {
 
 function fetchNaverTrendRange(start, end) {
   const url = "https://openapi.naver.com/v1/datalab/search";
-  const payload = { 
-    "startDate": start, 
-    "endDate": end, 
-    "timeUnit": "date", 
-    "keywordGroups": NAVER_KEYWORD_GROUPS.slice(0, 5) 
-  };
-  const options = { 
-    "method": "post", "contentType": "application/json", 
-    "headers": { "X-Naver-Client-Id": NAVER_CLIENT_ID, "X-Naver-Client-Secret": NAVER_CLIENT_SECRET },
-    "payload": JSON.stringify(payload), "muteHttpExceptions": true 
-  };
-  try {
-    const res = UrlFetchApp.fetch(url, options);
-    const json = JSON.parse(res.getContentText());
-    let merged = [];
-    if (json.results && json.results[0] && json.results[0].data) {
-      json.results[0].data.forEach(d => merged.push({ period: d.period, ratios: [] }));
-      json.results.forEach((g, gIdx) => g.data.forEach(d => {
-        let t = merged.find(r => r.period === d.period);
-        if (t) t.ratios[gIdx] = d.ratio;
-      }));
+  let mergedResults = [];
+  
+  // 5개씩 나누어서 호출 (현재 6개이므로 2번 호출됨)
+  for (let i = 0; i < NAVER_KEYWORD_GROUPS.length; i += 5) {
+    const chunk = NAVER_KEYWORD_GROUPS.slice(i, i + 5);
+    const payload = { 
+      "startDate": start, 
+      "endDate": end, 
+      "timeUnit": "date", 
+      "keywordGroups": chunk 
+    };
+    const options = { 
+      "method": "post", "contentType": "application/json", 
+      "headers": { "X-Naver-Client-Id": NAVER_CLIENT_ID, "X-Naver-Client-Secret": NAVER_CLIENT_SECRET },
+      "payload": JSON.stringify(payload), "muteHttpExceptions": true 
+    };
+
+    try {
+      const res = UrlFetchApp.fetch(url, options);
+      const json = JSON.parse(res.getContentText());
+      
+      if (json.results) {
+        // 첫 번째 호출 시 날짜(period) 틀 생성
+        if (mergedResults.length === 0) {
+          json.results[0].data.forEach(d => mergedResults.push({ period: d.period, ratios: [] }));
+        }
+        
+        // 각 그룹의 데이터를 mergedResults의 해당 날짜 ratios 배열에 추가
+        json.results.forEach((groupData) => {
+          groupData.data.forEach(d => {
+            let target = mergedResults.find(r => r.period === d.period);
+            if (target) target.ratios.push(d.ratio);
+          });
+        });
+      }
+    } catch (e) {
+      console.log("Naver API Chunk Error at index " + i);
     }
-    return merged;
-  } catch (e) { console.log("Naver API Error"); return []; }
+  }
+  return mergedResults;
 }
 
 /**
