@@ -19,7 +19,7 @@ function onOpen() {
 }
 
 // [환경 설정값]
-const GEMINI_API_KEY = '{API KET}';
+const GEMINI_API_KEY = '{APIKEY}';
 const NAVER_CLIENT_ID = 'ugxntcbaOqIuh_3y_uLv';
 const NAVER_CLIENT_SECRET = 'Hoqaso5G2k';
 const WEATHER_SERVICE_KEY = 'BNgXBXi+SL3VYIsQPruhshx9i37x/I/K6S5AFyd+cpu6wzvCjfZTgzu1MYazUfvVcj3wS8O1kZGADjOYUsN++A==';
@@ -670,45 +670,51 @@ function fetchWeatherDataRange(start, end) {
   } catch (e) { console.log("Weather API Error"); return []; }
 }
 
+/**
+ * [V15.4] 네이버 트렌드 데이터 수집 - 각 그룹별 개별 100 기준(정규화) 로직
+ */
 function fetchNaverTrendRange(start, end) {
   const url = "https://openapi.naver.com/v1/datalab/search";
   let mergedResults = [];
   
-  // 5개씩 나누어서 호출 (현재 6개이므로 2번 호출됨)
-  for (let i = 0; i < NAVER_KEYWORD_GROUPS.length; i += 5) {
-    const chunk = NAVER_KEYWORD_GROUPS.slice(i, i + 5);
+  // 각 키워드 그룹을 하나씩 독립적으로 호출 (그룹별 개별 100 기준 확보)
+  for (let i = 0; i < NAVER_KEYWORD_GROUPS.length; i++) {
+    const singleGroup = [NAVER_KEYWORD_GROUPS[i]];
     const payload = { 
       "startDate": start, 
       "endDate": end, 
       "timeUnit": "date", 
-      "keywordGroups": chunk 
+      "keywordGroups": singleGroup 
     };
     const options = { 
       "method": "post", "contentType": "application/json", 
-      "headers": { "X-Naver-Client-Id": NAVER_CLIENT_ID, "X-Naver-Client-Secret": NAVER_CLIENT_SECRET },
-      "payload": JSON.stringify(payload), "muteHttpExceptions": true 
+      "headers": { 
+        "X-Naver-Client-Id": NAVER_CLIENT_ID, 
+        "X-Naver-Client-Secret": NAVER_CLIENT_SECRET 
+      },
+      "payload": JSON.stringify(payload), 
+      "muteHttpExceptions": true 
     };
 
     try {
       const res = UrlFetchApp.fetch(url, options);
       const json = JSON.parse(res.getContentText());
       
-      if (json.results) {
-        // 첫 번째 호출 시 날짜(period) 틀 생성
+      if (json.results && json.results[0].data) {
+        // 첫 번째 그룹 호출 시 날짜(period) 틀 생성
         if (mergedResults.length === 0) {
           json.results[0].data.forEach(d => mergedResults.push({ period: d.period, ratios: [] }));
         }
         
-        // 각 그룹의 데이터를 mergedResults의 해당 날짜 ratios 배열에 추가
-        json.results.forEach((groupData) => {
-          groupData.data.forEach(d => {
-            let target = mergedResults.find(r => r.period === d.period);
-            if (target) target.ratios.push(d.ratio);
-          });
+        // 해당 그룹의 데이터를 날짜별로 매칭하여 ratios 배열에 추가
+        json.results[0].data.forEach((d, dIdx) => {
+          if (mergedResults[dIdx]) {
+            mergedResults[dIdx].ratios.push(d.ratio);
+          }
         });
       }
     } catch (e) {
-      console.log("Naver API Chunk Error at index " + i);
+      console.log(`${NAVER_KEYWORD_GROUPS[i].groupName} 그룹 호출 중 에러 발생`);
     }
   }
   return mergedResults;
@@ -765,6 +771,9 @@ function fetchRelatedNews(startDate, endDate) {
 /**
  * [복구] 고품격 리포트 UI 템플릿 (MTD/주간 비교표 및 디자인 강화)
  */
+/**
+ * [V15.9] 주간 비교표(Table 2)가 추가된 고품격 리포트 UI 템플릿
+ */
 function getEmailTemplate(d, cur, pre, old, mtd, mtdOld, aiContent, newsList) {
   const pct = (c, p) => {
     if (!p || p === 0) return "0.0%";
@@ -781,42 +790,68 @@ function getEmailTemplate(d, cur, pre, old, mtd, mtdOld, aiContent, newsList) {
     <div style="font-family: 'Malgun Gothic', sans-serif; max-width: 800px; margin: auto; padding: 20px; border: 1px solid #eee; color: #333;">
       <header style="border-bottom: 3px solid #0b5394; padding-bottom: 10px; margin-bottom: 20px;">
         <h2 style="color: #0b5394; margin: 0;">📊 세스코 통합 마케팅 성과 분석 리포트</h2>
-        <p style="margin: 5px 0 0 0; font-size: 13px; color: #666;">분석 기간: ${d.cur.start} ~ ${d.cur.end} (MTD 포함)</p>
+        <p style="margin: 5px 0 0 0; font-size: 13px; color: #666;">분석 기간: ${d.cur.start} ~ ${d.cur.end}</p>
       </header>
 
       <section style="margin-bottom: 30px;">
         <h4 style="background: #f8f9fa; padding: 8px; border-left: 4px solid #0b5394; margin-bottom: 10px;">1. 전년 대비 월간 누적 비교 (MTD)</h4>
         <table border="1" style="border-collapse: collapse; width: 100%; text-align: center; font-size: 12px; border-color: #ddd;">
           <tr style="background: #f3f3f3; font-weight: bold;">
-            <th style="padding: 10px;">구분</th><th>홈페이지 DB<br>(카카오포함)</th><th>긴급진단</th><th>홈페이지+긴급<br>합계</th><th>전체 신청</th>
+            <th style="padding: 10px;">구분</th><th>홈페이지 DB<br>(카카오포함)</th><th>긴급진단</th><th>홈페이지+긴급<br>합계</th><th>IB 콜</th><th>전체 신청</th>
           </tr>
           <tr>
             <td style="padding: 10px; background: #fff;">당월 누적</td>
-            <td>${mtd.webDbInclKakao}</td><td>${mtd.emergency}</td><td style="font-weight:bold;">${mtd.webEmSum}</td><td>${mtd.total}</td>
+            <td>${mtd.webDbInclKakao}</td><td>${mtd.emergency}</td><td style="font-weight:bold;">${mtd.webEmSum}</td><td>${mtd.callIb}</td><td>${mtd.total}</td>
           </tr>
           <tr>
             <td style="padding: 10px; background: #fff;">전년 누적</td>
-            <td>${mtdOld.webDbInclKakao}</td><td>${mtdOld.emergency}</td><td style="font-weight:bold;">${mtdOld.webEmSum}</td><td>${mtdOld.total}</td>
+            <td>${mtdOld.webDbInclKakao}</td><td>${mtdOld.emergency}</td><td style="font-weight:bold;">${mtdOld.webEmSum}</td><td>${mtdOld.callIb}</td><td>${mtdOld.total}</td>
           </tr>
           <tr style="background: #fdfdfd;">
             <td style="padding: 10px; font-weight: bold;">증감(%)</td>
-            <td>${pct(mtd.webDbInclKakao, mtdOld.webDbInclKakao)}</td>
-            <td>${pct(mtd.emergency, mtdOld.emergency)}</td>
-            <td>${pct(mtd.webEmSum, mtdOld.webEmSum)}</td>
-            <td>${pct(mtd.total, mtdOld.total)}</td>
+            <td>${pct(mtd.webDbInclKakao, mtdOld.webDbInclKakao)}</td><td>${pct(mtd.emergency, mtdOld.emergency)}</td><td>${pct(mtd.webEmSum, mtdOld.webEmSum)}</td><td>${pct(mtd.callIb, mtdOld.callIb)}</td><td>${pct(mtd.total, mtdOld.total)}</td>
           </tr>
         </table>
       </section>
 
       <section style="margin-bottom: 30px;">
-        <h4 style="background: #f8f9fa; padding: 8px; border-left: 4px solid #0b5394; margin-bottom: 10px;">2. 데이터 기반 전략 인과관계 분석</h4>
+        <h4 style="background: #f8f9fa; padding: 8px; border-left: 4px solid #0b5394; margin-bottom: 10px;">2. 전년/전주 대비 주간 수치 비교</h4>
+        <table border="1" style="border-collapse: collapse; width: 100%; text-align: center; font-size: 11px; border-color: #ddd;">
+          <tr style="background: #f3f3f3; font-weight: bold;">
+            <th style="padding: 8px;">구분</th><th>홈페이지 DB<br>(카카오포함)</th><th>긴급진단</th><th>홈페이지+긴급<br>합계</th><th>IB 콜</th><th>전체 신청</th>
+          </tr>
+          <tr>
+            <td style="padding: 8px; background: #fff;">금주 (${d.cur.start})</td>
+            <td>${cur.webDbInclKakao}</td><td>${cur.emergency}</td><td style="font-weight:bold;">${cur.webEmSum}</td><td>${cur.callIb}</td><td>${cur.total}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px; background: #fff;">전년 동요일 (${d.year.start})</td>
+            <td>${old.webDbInclKakao}</td><td>${old.emergency}</td><td>${old.webEmSum}</td><td>${old.callIb}</td><td>${old.total}</td>
+          </tr>
+          <tr style="background: #fdfdfd; font-weight: bold;">
+            <td style="padding: 8px;">전년 대비 (%)</td>
+            <td>${pct(cur.webDbInclKakao, old.webDbInclKakao)}</td><td>${pct(cur.emergency, old.emergency)}</td><td>${pct(cur.webEmSum, old.webEmSum)}</td><td>${pct(cur.callIb, old.callIb)}</td><td>${pct(cur.total, old.total)}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px; background: #fff;">전주 (${d.prev.start})</td>
+            <td>${pre.webDbInclKakao}</td><td>${pre.emergency}</td><td>${pre.webEmSum}</td><td>${pre.callIb}</td><td>${pre.total}</td>
+          </tr>
+          <tr style="background: #fdfdfd; font-weight: bold;">
+            <td style="padding: 8px;">전주 대비 (%)</td>
+            <td>${pct(cur.webDbInclKakao, pre.webDbInclKakao)}</td><td>${pct(cur.emergency, pre.emergency)}</td><td>${pct(cur.webEmSum, pre.webEmSum)}</td><td>${pct(cur.callIb, pre.callIb)}</td><td>${pct(cur.total, pre.total)}</td>
+          </tr>
+        </table>
+      </section>
+
+      <section style="margin-bottom: 30px;">
+        <h4 style="background: #f8f9fa; padding: 8px; border-left: 4px solid #0b5394; margin-bottom: 10px;">3. 데이터 기반 전략 인과관계 분석</h4>
         <div style="line-height: 1.8; font-size: 14px; background: #fcfcfc; padding: 20px; border-radius: 5px; border: 1px solid #eee;">
           ${aiContent}
         </div>
       </section>
 
       <section>
-        <h4 style="background: #f8f9fa; padding: 8px; border-left: 4px solid #0b5394; margin-bottom: 10px;">3. 분석 기간 내 주요 외부 이슈</h4>
+        <h4 style="background: #f8f9fa; padding: 8px; border-left: 4px solid #0b5394; margin-bottom: 10px;">4. 분석 기간 내 주요 외부 이슈</h4>
         <ul style="padding-left: 20px; margin: 0;">
           ${newsHtml}
         </ul>
