@@ -377,9 +377,13 @@ function getDetailedStats(sheet, startStr, endStr) {
  */
 function extractKeywordSummary(sheet, limit, type) {
   if (!sheet || sheet.getLastRow() < 2) return "데이터 없음";
-  const data = sheet.getRange(2, 1, Math.min(sheet.getLastRow()-1, limit), 5).getValues();
+  // 5를 8로 수정하여 H열까지 데이터를 가져옵니다.
+  const data = sheet.getRange(2, 1, Math.min(sheet.getLastRow()-1, limit), 8).getValues(); 
   return data.map(r => {
-    if (type === "유입") return `${r[2]}(클릭:${r[3]}, WoW:${r[6]||0})`;
+    if (type === "유입") {
+      // r[6]은 WoW증감(G열), r[7]은 YoY증감(H열)입니다.
+      return `${r[2]}(클릭:${r[3]}, WoW:${r[6]||0}, YoY:${r[7]||0})`; 
+    }
     return `${r[0]}(수치:${r[1]})`;
   }).join(", ");
 }
