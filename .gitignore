@@ -19,7 +19,7 @@ function onOpen() {
 }
 
 // [환경 설정값]
-const GEMINI_API_KEY = '{API키}';
+const GEMINI_API_KEY = 'apikey';
 const NAVER_CLIENT_ID = 'ugxntcbaOqIuh_3y_uLv';
 const NAVER_CLIENT_SECRET = 'Hoqaso5G2k';
 const WEATHER_SERVICE_KEY = 'BNgXBXi+SL3VYIsQPruhshx9i37x/I/K6S5AFyd+cpu6wzvCjfZTgzu1MYazUfvVcj3wS8O1kZGADjOYUsN++A==';
@@ -94,8 +94,8 @@ function getPeriodStatsExtended(sheet, startStr, endStr) {
       res.total += Number(data[i][11]||0);
 
       res.home += (Number(data[i][1]||0) + Number(data[i][6]||0) + Number(data[i][17]||0) + Number(data[i][20]||0));
-      res.rest += (Number(data[i][2]||0) + Number(data[i][7]||0) + Number(data[i][18]||0) + Number(data[i][21]||0));
-      res.biz  += (Number(data[i][3]||0) + Number(data[i][8]||0));
+      res.rest += (Number(data[i][2]||0) + Number(data[i][7]||0) + Number(data[i][18]||0)); // data[i][21] 제거
+      res.biz  += (Number(data[i][3]||0) + Number(data[i][8]||0) + Number(data[i][21]||0)); // data[i][21] 추가
       res.etc  += (Number(data[i][4]||0) + Number(data[i][9]||0));
 
       res.avgTemp += Number(data[i][14]||0); 
@@ -375,8 +375,8 @@ function getDetailedStats(sheet, startStr, endStr) {
       res.webEmSum += (Number(data[i][5]||0) + Number(data[i][17]||0) + Number(data[i][18]||0) + Number(data[i][20]||0) + Number(data[i][21]||0));
       
       res.home += (Number(data[i][1]||0) + Number(data[i][6]||0) + Number(data[i][17]||0) + Number(data[i][20]||0));
-      res.rest += (Number(data[i][2]||0) + Number(data[i][7]||0) + Number(data[i][18]||0) + Number(data[i][21]||0));
-      res.biz  += (Number(data[i][3]||0) + Number(data[i][8]||0));
+      res.rest += (Number(data[i][2]||0) + Number(data[i][7]||0) + Number(data[i][18]||0)); // data[i][21] 제거
+      res.biz  += (Number(data[i][3]||0) + Number(data[i][8]||0) + Number(data[i][21]||0)); // data[i][21] 추가
 
       // 기온 데이터가 있는 경우만 합산 (빈 셀 0도 처리 방지)
       if (data[i][14] !== "" && !isNaN(data[i][14])) {
