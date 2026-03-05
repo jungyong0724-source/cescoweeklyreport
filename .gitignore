@@ -15,11 +15,11 @@ function onOpen() {
       .addSeparator()
       .addItem('지난주 HTML 보고서 새롭게 작성하기', 'generateWeeklyReport')
       .addItem('작성된 보고서 다시 미리보기', 'showSavedReportPreview')
-      .addToUi();
+      .addToUi();   
 }
 
 // [환경 설정값]
-const GEMINI_API_KEY = 'apikey';
+const GEMINI_API_KEY = '{apikey}';
 const NAVER_CLIENT_ID = 'ugxntcbaOqIuh_3y_uLv';
 const NAVER_CLIENT_SECRET = 'Hoqaso5G2k';
 const WEATHER_SERVICE_KEY = 'BNgXBXi+SL3VYIsQPruhshx9i37x/I/K6S5AFyd+cpu6wzvCjfZTgzu1MYazUfvVcj3wS8O1kZGADjOYUsN++A==';
@@ -135,7 +135,7 @@ function generateWeeklyReport() {
   const mtdOld = getDetailedStats(dataSheet, d.mtdYear.start, d.mtdYear.end);
   
   // 2. 키워드/뉴스 추출
-  const topInbound = extractKeywordSummary(ga4InboundSheet, 15, "유입");
+  const topInbound = extractKeywordSummary(ga4InboundSheet, 30, "유입");
   const topGSC = extractKeywordSummary(gscSheet, 10, "구글검색");
   const newsList = fetchRelatedNews(d.cur.start, d.cur.end);
   const newsContext = newsList.length > 0 ? newsList.map(n => `[${n.date}] ${n.title}`).join(" / ") : "없음";
@@ -270,10 +270,19 @@ function generateWeeklyReport() {
 /**
  * [BigQuery] GA4 핵심페이지 유입분석 (8개 컬럼 복구 및 에러 해결)
  */
+/**
+ * [업그레이드] GA4 핵심페이지 유입분석 (소스/매체/SM별 합산 기능 추가)
+ */
+/**
+ * [안정성 강화 버전] GA4 유입분석 (소스/매체/키워드별 합산 포함)
+ */
+/**
+ * [오류 수정 버전] GA4 유입분석 (Null 값 방어 로직 추가)
+ */
 function updateGA4InboundWeeklyData(dates) {
-  // [추가] 메뉴에서 직접 클릭했을 때 날짜를 못 찾는 에러 방지
   if (!dates) dates = getReportingPeriods();
 
+  // IFNULL을 사용하여 소스나 매체가 없을 경우 '(direct)'나 '(none)'으로 치환하여 Null 에러를 방지합니다.
   const sql = `
     WITH session_raw AS (
       SELECT 
@@ -281,59 +290,79 @@ function updateGA4InboundWeeklyData(dates) {
         (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') as session_id,
         traffic_source.source, 
         traffic_source.medium, 
-        -- 키워드가 없으면 매체명을 괄호로 표시
         COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'term'), CONCAT('(', traffic_source.medium, ')')) as keyword,
         CASE 
           WHEN _TABLE_SUFFIX BETWEEN '${dates.cur.bq}' AND '${dates.cur.bqEnd}' THEN 'cur'
           WHEN _TABLE_SUFFIX BETWEEN '${dates.prev.bq}' AND '${dates.prev.bqEnd}' THEN 'prev'
           WHEN _TABLE_SUFFIX BETWEEN '${dates.year.bq}' AND '${dates.year.bqEnd}' THEN 'year'
         END as period,
-        -- 특정 페이지(신청서 등) 방문 여부 체크
         MAX(CASE WHEN EXISTS (SELECT 1 FROM UNNEST(event_params) WHERE key = 'page_location' AND (value.string_value LIKE '%estimate%' OR value.string_value LIKE '%G2000001274%')) THEN 1 ELSE 0 END) as is_target
       FROM \`${GA4_PROJECT_ID}.${GA4_DATASET_ID}.events_*\`
       WHERE _TABLE_SUFFIX BETWEEN '${dates.year.bq}' AND '${dates.cur.bqEnd}'
       GROUP BY 1, 2, 3, 4, 5, 6
+    ),
+    agg_base AS (
+      -- 1. 기본 로우 단위
+      SELECT source, medium, keyword, period, COUNT(DISTINCT IF(is_target=1, CONCAT(user_pseudo_id, CAST(session_id AS STRING)), NULL)) as vol
+      FROM session_raw WHERE period IS NOT NULL GROUP BY 1, 2, 3, 4
+      UNION ALL
+      -- 2. 소스별 합계 (IFNULL 추가)
+      SELECT source, '(전체)', CONCAT('★[소스합계] ', IFNULL(source, '(direct)')), period, COUNT(DISTINCT IF(is_target=1, CONCAT(user_pseudo_id, CAST(session_id AS STRING)), NULL)) as vol
+      FROM session_raw WHERE period IS NOT NULL GROUP BY 1, 2, 3, 4
+      UNION ALL
+      -- 3. 매체별 합계 (IFNULL 추가)
+      SELECT '(전체)', medium, CONCAT('★[매체합계] ', IFNULL(medium, '(none)')), period, COUNT(DISTINCT IF(is_target=1, CONCAT(user_pseudo_id, CAST(session_id AS STRING)), NULL)) as vol
+      FROM session_raw WHERE period IS NOT NULL GROUP BY 1, 2, 3, 4
+      UNION ALL
+      -- 4. 소스/매체별 합계 (IFNULL 추가)
+      SELECT source, medium, CONCAT('★[S/M합계] ', IFNULL(source, '(direct)'), ' / ', IFNULL(medium, '(none)')), period, COUNT(DISTINCT IF(is_target=1, CONCAT(user_pseudo_id, CAST(session_id AS STRING)), NULL)) as vol
+      FROM session_raw WHERE period IS NOT NULL GROUP BY 1, 2, 3, 4
     )
     SELECT 
-      source, 
-      medium, 
-      keyword,
-      -- 0, 1이 아닌 실제 '유니크 세션 수'를 카운트합니다.
-      COUNT(DISTINCT IF(period = 'cur' AND is_target = 1, CONCAT(user_pseudo_id, CAST(session_id AS STRING)), NULL)) as cur_vol,
-      COUNT(DISTINCT IF(period = 'prev' AND is_target = 1, CONCAT(user_pseudo_id, CAST(session_id AS STRING)), NULL)) as prev_vol,
-      COUNT(DISTINCT IF(period = 'year' AND is_target = 1, CONCAT(user_pseudo_id, CAST(session_id AS STRING)), NULL)) as year_vol
-    FROM session_raw
-    WHERE period IS NOT NULL
+      source, medium, keyword,
+      SUM(IF(period = 'cur', vol, 0)) as cur_vol,
+      SUM(IF(period = 'prev', vol, 0)) as prev_vol,
+      SUM(IF(period = 'year', vol, 0)) as year_vol
+    FROM agg_base
     GROUP BY 1, 2, 3
-    HAVING cur_vol > 0 OR prev_vol > 0
+    HAVING cur_vol > 0 OR prev_vol > 0 OR year_vol > 0
     ORDER BY cur_vol DESC
-    LIMIT 500
+    LIMIT 1000
   `;
 
-  const results = runBQQuery(sql, GA4_PROJECT_ID);
-  let sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('GA4유입키워드') || SpreadsheetApp.getActiveSpreadsheet().insertSheet('GA4유입키워드');
-  
-  sheet.clear(); 
-  // 기존 8개 헤더 유지
-  sheet.getRange(1,1,1,8).setValues([["소스","매체","핵심유입경로","보고주","전주","전년동기","WoW증감","YoY증감"]]);
-  sheet.getRange(1,1,1,8).setBackground("#0b5394").setFontColor("white").setFontWeight("bold");
+  try {
+    const results = runBQQuery(sql, GA4_PROJECT_ID);
+    let sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('GA4유입키워드') || SpreadsheetApp.getActiveSpreadsheet().insertSheet('GA4유입키워드');
+    
+    sheet.clear(); 
+    sheet.getRange(1,1,1,8).setValues([["소스","매체","핵심유입경로","보고주","전주","전년동기","WoW증감","YoY증감"]]);
+    sheet.getRange(1,1,1,8).setBackground("#0b5394").setFontColor("white").setFontWeight("bold");
 
-  if (results.length > 0) {
-    // 8개 컬럼에 맞춰 데이터 맵핑 (증감분 계산 포함)
-    const finalResults = results.map(r => {
-      const c = Number(r[3] || 0);
-      const p = Number(r[4] || 0);
-      const y = Number(r[5] || 0);
-      return [
-        r[0], r[1], r[2], // 소스, 매체, 경로
-        c, p, y,          // 현재, 전주, 전년 수치
-        (c - p),          // WoW증감
-        (c - y)           // YoY증감
-      ];
-    });
-    sheet.getRange(2, 1, finalResults.length, 8).setValues(finalResults);
+    if (results && results.length > 0) {
+      const finalResults = results.map(r => {
+        const c = Number(r[3] || 0);
+        const p = Number(r[4] || 0);
+        const y = Number(r[5] || 0);
+        return [r[0], r[1], r[2], c, p, y, (c - p), (c - y)];
+      });
+      
+      sheet.getRange(2, 1, finalResults.length, 8).setValues(finalResults);
+      
+      // [수정] 합계 행 배경색 강조 시 Null 체크 강화
+      for(let i=0; i < finalResults.length; i++) {
+        const keywordCell = finalResults[i][2];
+        // keywordCell이 존재하고(null이 아니고), 문자열에 ★이 포함되어 있는지 확인
+        if(keywordCell && String(keywordCell).indexOf("★") !== -1) {
+          sheet.getRange(i+2, 1, 1, 8).setBackground("#f8f9fa");
+        }
+      }
+      SpreadsheetApp.getUi().alert("GA4 유입 분석 업데이트가 완료되었습니다.");
+    } else {
+      SpreadsheetApp.getUi().alert("데이터가 없습니다.");
+    }
+  } catch (e) {
+    SpreadsheetApp.getUi().alert("오류 발생: " + e.message);
   }
-  SpreadsheetApp.getUi().alert("GA4 유입 세션량 집계가 완료되었습니다.");
 }
 
 /**
@@ -616,31 +645,36 @@ function showSavedReportPreview() { const h = SpreadsheetApp.getActiveSpreadshee
 /**
  * [V15.3] 외부 데이터(날씨, 트렌드, 지표) 동기화 엔진 - 날짜 매칭 버그 완벽 수정
  */
+/**
+ * [A방법 - 최소 수정] 외부 데이터 동기화 엔진
+ * 필요한 열만 선택적으로 업데이트하여 F, K, L열의 ArrayFormula를 보호합니다.
+ */
+/**
+ * [최종 수정] 외부 데이터 동기화 엔진
+ * A열(날짜), F/K/L열(기본 지표), Q열을 건드리지 않고 필요한 열만 선택적으로 업데이트합니다.
+ */
 function updateExternalData() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('2_로데이터');
   if (!sheet) { SpreadsheetApp.getUi().alert("2_로데이터 시트를 찾을 수 없습니다."); return; }
 
   const today = new Date();
-  // 날씨용: 최근 45일 (충분한 버퍼)
   const last45Days = Utilities.formatDate(new Date(today.getTime() - 45 * 24 * 60 * 60 * 1000), "GMT+9", "yyyyMMdd");
   const yesterdayStr = Utilities.formatDate(new Date(today.getTime() - 24 * 60 * 60 * 1000), "GMT+9", "yyyyMMdd");
   
-  // 네이버용: 1년 전부터 어제까지 (전년 동요일 비교를 위해)
   const oneYearAgo = Utilities.formatDate(new Date(today.getFullYear()-1, today.getMonth(), today.getDate()-7), "GMT+9", "yyyy-MM-dd");
   const yesterdayFmt = Utilities.formatDate(new Date(today.getTime() - 24 * 60 * 60 * 1000), "GMT+9", "yyyy-MM-dd");
   
-  // 1. 외부 데이터 API 호출
   const weatherData = fetchWeatherDataRange(last45Days, yesterdayStr);
   const naverData = fetchNaverTrendRange(oneYearAgo, yesterdayFmt);
   const holidayCal = CalendarApp.getCalendarById(HOLIDAY_CAL_ID);
   
-  // 2. 시트 데이터 로드 (안전을 위해 최근 200줄로 범위 확장)
   const lastRow = sheet.getLastRow();
-  const startRow = 2; // 헤더 제외 2행부터
+  const startRow = 2;
   const numRows = lastRow - 1;
   if (numRows <= 0) return;
 
+  // 1. [읽기] 계산을 위해 A~AI열 전체를 가져옵니다 (A, F, K, Q열 등 참조용).
   const range = sheet.getRange(startRow, 1, numRows, 35); 
   const values = range.getValues();
 
@@ -648,16 +682,14 @@ function updateExternalData() {
   let naverCount = 0;
 
   for (let i = 0; i < values.length; i++) {
-    let rawDate = values[i][0];
+    let rawDate = values[i][0]; // A열(index 0) 읽기
     if (!rawDate) continue;
 
-    // [강화된 날짜 정규화] 어떤 형식이든 yyyy-MM-dd 문자열로 강제 변환
     let dStr = "";
     try {
       if (rawDate instanceof Date) {
         dStr = Utilities.formatDate(rawDate, "GMT+9", "yyyy-MM-dd");
       } else {
-        // 텍스트(2026.01.20 등)일 경우 숫자만 추출해서 yyyy-MM-dd로 재구성
         let clean = String(rawDate).replace(/[^0-9]/g, ""); 
         if (clean.length >= 8) {
           dStr = clean.substring(0,4) + "-" + clean.substring(4,6) + "-" + clean.substring(6,8);
@@ -665,50 +697,60 @@ function updateExternalData() {
       }
     } catch(e) { continue; }
 
-    if (!dStr) continue;
+    if (dStr >= oneYearAgo) {
+      // 날씨(O:14, W:22, X:23)
+      const wMatch = weatherData.find(item => item.tm === dStr);
+      if (wMatch) { 
+        values[i][14] = wMatch.avgTa; 
+        values[i][22] = wMatch.maxTa; 
+        values[i][23] = wMatch.sumRn || 0; 
+        weatherCount++;
+      }
+      // 기온차(P:15)
+      if (i > 0 && values[i][14] !== "" && values[i-1][14] !== "") {
+        values[i][15] = (Number(values[i][14]) - Number(values[i-1][14])).toFixed(1);
+      }
+      // 긴급도(T:19) - F열(5)과 K열(10) 참조
+      let freeIbSum = Number(values[i][5] || 0) + Number(values[i][10] || 0);
+      let emergencySum = Number(values[i][20] || 0) + Number(values[i][21] || 0);
+      values[i][19] = freeIbSum > 0 ? (emergencySum / freeIbSum).toFixed(2) : 0;
 
-    // A. 날씨 정보 매칭 (O:14, W:22, X:23)
-    const wMatch = weatherData.find(item => item.tm === dStr);
-    if (wMatch) { 
-      values[i][14] = wMatch.avgTa; // 평균기온
-      values[i][22] = wMatch.maxTa; // 최고기온
-      values[i][23] = wMatch.sumRn || 0; // 강수량
-      weatherCount++;
-    }
-    
-    // B. 전일대비 기온차 (P:15)
-    if (i > 0 && values[i][14] !== "" && values[i-1][14] !== "") {
-      values[i][15] = (Number(values[i][14]) - Number(values[i-1][14])).toFixed(1);
-    }
-
-    // C. 긴급도 지표 (T:19) 자동 계산
-    let freeIbSum = Number(values[i][5] || 0) + Number(values[i][10] || 0);
-    let emergencySum = Number(values[i][20] || 0) + Number(values[i][21] || 0);
-    values[i][19] = freeIbSum > 0 ? (emergencySum / freeIbSum).toFixed(2) : 0;
-
-      // D. 네이버 트렌드 매칭 (Y:24 ~ AD:29)
-    const nMatch = naverData.find(item => item.period === dStr);
-    if (nMatch && nMatch.ratios) {
-      // 이제 ratios 배열에 6개의 데이터가 들어있으므로 모두 시트에 적재합니다.
-      nMatch.ratios.forEach((r, idx) => { 
-        if (idx < 6) values[i][24 + idx] = r; 
-      });
-      naverCount++;
-    }
-
-    // E. 공휴일 정보 (AE:30)
-    if (holidayCal) {
-      try {
-        const dateObj = (rawDate instanceof Date) ? rawDate : new Date(dStr);
-        const events = holidayCal.getEventsForDay(dateObj);
-        values[i][30] = events.length > 0 ? events.map(h => h.getTitle()).join(", ") : "";
-      } catch(e) {}
+      // 네이버 트렌드(Y~AD:24~29)
+      const nMatch = naverData.find(item => item.period === dStr);
+      if (nMatch && nMatch.ratios) {
+        nMatch.ratios.forEach((r, idx) => { if (idx < 6) values[i][24 + idx] = r; });
+        naverCount++;
+      }
+      // 공휴일(AE:30)
+      if (holidayCal) {
+        try {
+          const events = holidayCal.getEventsForDay((rawDate instanceof Date) ? rawDate : new Date(dStr));
+          values[i][30] = events.length > 0 ? events.map(h => h.getTitle()).join(", ") : "";
+        } catch(e) {}
+      }
     }
   }
   
-  // 3. 시트 반영
-  range.setValues(values);
-  SpreadsheetApp.getUi().alert(`✅ 동기화 완료!\n- 날씨 업데이트: ${weatherCount}건\n- 트렌드 업데이트: ${naverCount}건`);
+  // 2. [쓰기] 보호해야 할 열(A~N, Q~S)을 제외하고 필요한 구간만 업데이트합니다.
+  
+  // 기온/기온차 업데이트 (O~P열, 15~16번째 열)
+  sheet.getRange(startRow, 15, numRows, 2).setValues(values.map(r => [r[14], r[15]]));
+  
+  // Q, R, S열은 건너뜁니다.
+  
+  // 긴급도 지표 업데이트 (T열, 20번째 열)
+  sheet.getRange(startRow, 20, numRows, 1).setValues(values.map(r => [r[19]]));
+  
+  // 최고기온/강수량 업데이트 (W~X열, 23~24번째 열)
+  sheet.getRange(startRow, 23, numRows, 2).setValues(values.map(r => [r[22], r[23]]));
+  
+  // 네이버 트렌드 업데이트 (Y~AD열, 25~30번째 열)
+  sheet.getRange(startRow, 25, numRows, 6).setValues(values.map(r => r.slice(24, 30)));
+  
+  // 공휴일 정보 업데이트 (AE열, 31번째 열)
+  sheet.getRange(startRow, 31, numRows, 1).setValues(values.map(r => [r[30]]));
+
+  SpreadsheetApp.getUi().alert(`✅ 동기화 완료! (A열 및 Q열 등 모든 수식 열이 보호되었습니다.)`);
 }
 
 function fetchWeatherDataRange(start, end) {
